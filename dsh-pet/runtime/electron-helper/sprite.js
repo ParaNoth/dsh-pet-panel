@@ -37,9 +37,12 @@ class PetSprite {
     this.sideAllow = (S.HIT_BOX.x0 / 640) * this.size;
     window.__dshPetDebug.sideAllow = this.sideAllow;
     // 窗口四周外扩（= WINDOW_MARGIN_RATIO×宠物尺寸）：sprite 钉在 (margin.l, margin.t)，
-    // 窗口 = sprite + 四边余量——气泡/未来弹窗显示在余量里；余量透明且点击穿透
+    // 窗口 = sprite + 四边余量——弹窗显示在余量里；余量透明且点击穿透。
+    // 顶部余量单独取 PANEL_TOP_MARGIN_RATIO（更小）：气泡已由 __dshPetBubbleEnabled 关掉，
+    // 头顶那段空间现在留给**会话面板**，所以顶部只留"够放面板 + 一点间隙"的高度——面板才能贴近宠物。
+    // 左右/下仍用 WINDOW_MARGIN_RATIO（边界漫游与菜单夹取依赖它）。
     const m = this.size * WINDOW_MARGIN_RATIO;
-    this.margin = { t: m, r: m, b: m, l: m };
+    this.margin = { t: this.size * PANEL_TOP_MARGIN_RATIO, r: m, b: m, l: m };
     window.__dshPetDebug.winMargin = this.margin;
     // 宠物包围盒左上角在【工作区】坐标系里的位置（本窗口的位置 = 宠物的位置）
     this.pos = { x: 0, y: 0 };
@@ -63,6 +66,7 @@ class PetSprite {
     this.dragState = { active: false, dragging: false, sx: 0, sy: 0, petX: 0, petY: 0 };
     this.justDragged = false;
     this._interactive = null; // 已上报的可交互状态（setInteractive 去重用）
+    this._panelBusy = false; // 光标是否停在面板等登记区（经 setInputBusy 顶住兜底穿透翻转）
     this._inputBusy = null; // 已上报的"正在用输入"状态（syncInputBusy 去重用）
     // 拖拽抛掷物理（与浏览器 pet.ts 同构；纯计算在 shared-core S.*）：
     // 拖拽中弹簧跟随目标（包围盒左上角，工作区 px），松手按指针轨迹估速 → 抛掷（重力+边缘反弹）
@@ -126,6 +130,10 @@ class PetSprite {
     this.el.style.left = this.margin.l + 'px';
     this.el.style.top = this.margin.t + 'px';
     this.el.style.setProperty('--pet-size', this.size + 'px');
+    // 同时设到根元素：`--pet-size` 必须能被**窗口内的兄弟组件**读到（如会话面板挂在 body 下，
+    // 并非 .pet-sprite 的后代；只设在 sprite 上会让面板里所有 calc(var(--pet-size)) 失效 →
+    // 宽度/最大高度/定位一起塌成默认值，表现为"一条很窄的长条"）。每个窗口只有一只宠物，安全。
+    document.documentElement.style.setProperty('--pet-size', this.size + 'px');
     const stage = document.createElement('div');
     stage.className = 'pet-stage';
     stage.style.transform = 'translateY(' + this.bottomPad + 'px)';
@@ -243,6 +251,11 @@ class PetSprite {
   sendBounds(px, py) {
     this.pos = { x: Math.round(px), y: Math.round(py) };
     window.__dshPetDebug.dragPos = { x: this.pos.x, y: this.pos.y };
+    // 会话面板的贴边方位：这里是一次移动的唯一出口（拖拽/抛掷/漫游/重挂都会经过），
+    // 所以挂在这比在每个运动分支里分别调用可靠。面板内部会比对位置自行去重。
+    if (window.__dshSessionPanel && typeof window.__dshSessionPanel.reposition === 'function') {
+      window.__dshSessionPanel.reposition(this);
+    }
     if (window.petBridge) {
       // 完整状态一次捎带：size/bottomPad 让静止宠物从首帧起就登记进碰撞站场
       // （此前只有 report-flight 带尺寸，从没飞过的宠物 size=0 被碰撞检测直接跳过）；
@@ -952,7 +965,20 @@ class PetSprite {
     const wy = Number.isFinite(e.clientY) ? e.clientY : toLocal(e.screenY) - (this.pos.y + VIEW.y - this.margin.t);
     const px = wx - this.margin.l;
     const py = wy - this.margin.t;
-    this.setInteractive(px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h);
+    // 身体命中区（canvas 坐标）**或**任何已登记的窗口内可交互区（如会话面板，窗口局部坐标）。
+    // 登记表约定见 __dshPetInteractiveRegions：元素自报矩形，避免这里写死具体组件。
+    const inBody = px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+    const inRegion = interactiveRegionAt(wx, wy);
+    this.setInteractive(inBody || inRegion);
+    // 命中面板等登记区时额外走 setInputBusy：这是宠物菜单/对话弹窗一直在用、**已验证可点**的那条
+    // 通道（busy 期间主进程的兜底通道绝不把窗口翻回穿透）。只靠 setInteractive 时，主进程
+    // 兜底轮询可能按"光标不在宠物身上"把它翻回穿透，点击就落不到面板上（实测：面板悬停会亮、
+    // 但点 × 与 ⟲ 都无反应）。
+    const wantBusy = inRegion && !inBody;
+    if (wantBusy !== this._panelBusy) {
+      this._panelBusy = wantBusy;
+      if (window.petBridge && window.petBridge.setInputBusy) window.petBridge.setInputBusy(wantBusy || this.inputBusy());
+    }
   }
 
   onClick() {
@@ -1174,6 +1200,18 @@ class PetSprite {
   }
 
   renderBubble() {
+    // 气泡总开关：关掉后**不渲染任何气泡**（工作状态/碎碎念/余额/对话回复）。
+    // 动机：气泡占着宠物头顶上方那段空间，而会话面板也要用那块区域 —— 去掉气泡后
+    // 顶部余量可以从"半只宠物"收缩到"够放面板"，面板随之贴近宠物头部。
+    // 想恢复气泡：把 renderer.js 里的 __dshPetBubbleEnabled 改回 true（或删掉那一行）。
+    if (window.__dshPetBubbleEnabled === false) {
+      if (this.bubble.classList.contains('is-on')) {
+        this.bubble.classList.remove('is-on');
+        this.bubble.innerHTML = '';
+        window.__dshPetDebug.lastBubbleTitle = '';
+      }
+      return;
+    }
     // 气泡优先级：工作状态 > 碎碎念 > 余额（工作状态是 DSH 真实状态，最要紧；三者都关时隐藏）
     // 工作气泡与碎碎念同款弹窗样式：宽度自适应 + 自动换行（is-whisper：正常 white-space、宽随内容）
     // 配图标记交给 CSS：带图时取消 min-width（样式在 shared 的 MEME_BUBBLE_CSS，两端同一份）。

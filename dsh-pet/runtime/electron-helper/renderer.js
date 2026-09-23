@@ -79,6 +79,8 @@ async function boot() {
     }
     for (const s of sprites) s.dispose();
     sprites = [new PetSprite(pet)];
+    // 暴露给面板：设置页改了 side 之后要主动重算一次贴边方位（位置没变时 reposition 会去重跳过）
+    window.__dshPetSprite = sprites[0];
     window.__dshPetDebug.configOk = true;
     window.__dshPetDebug.spriteCount = sprites.length;
     for (const s of sprites) s.playIdle();
@@ -131,5 +133,15 @@ window.addEventListener('resize', () => {
   }
 });
 
+// 气泡总开关（见 sprite.js renderBubble）：false = 完全不渲染气泡，把头顶空间让给会话面板。
+// 想恢复气泡：改成 true。
+window.__dshPetBubbleEnabled = false;
+
 injectAssets();
+
+// 会话面板：与宠物**同一个窗口**的兄弟 DOM 节点（方案 A）。
+// 它自己报告矩形，sprite 的命中判定把该矩形纳入可交互区（见 __dshPetInteractiveRegions 约定）：
+// 面板在窗口顶部余量区，平时那里是"整窗点击穿透"的，不登记的话行点击会被穿透吃掉。
+window.__dshSessionPanel = new SessionsPanel(document.body).start();
+
 void boot();

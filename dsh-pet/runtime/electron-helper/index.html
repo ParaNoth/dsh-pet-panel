@@ -64,8 +64,9 @@
       }
       /* 余额气泡：与浏览器 overlay 同一套视觉（白色圆润泡 + 峰/谷/错误着色），
          尺寸随宠物宽度 var(--pet-size) 等比缩放；字体经 renderer 注入上首软糖体 @font-face */
+      /* 气泡已关闭（renderer.js 的 __dshPetBubbleEnabled=false）：这条规则保证它不显示、也不占位 */
       .pet-bubble {
-        position: absolute;
+        display: none !important;
         left: 50%;
         transform: translateX(-50%);
         bottom: calc(100% - var(--pet-size, 462px) * 0.108);
@@ -159,16 +160,268 @@
           transition: none;
         }
       }
+
+      /* ---------- 会话面板（与宠物同一个窗口；方案 A：普通 DOM 兄弟节点） ---------- */
+      /* 位置：窗口**顶部那段已有余量**里（= 半只宠物高，原本给气泡预留的透明区），靠右对齐。
+         刻意不额外占窗口空间：给面板加高窗口会让宠物上移时被屏幕顶边"顶住"（实测体感很差）。
+         所以高度上限设成"不碰到宠物头顶"（余量 − 上下各 8px），行样式相应做紧凑设计。 */
+      .dsh-sess-panel {
+        /* 字号全部按宠物尺寸等比（与气泡同一套约定）：换宠物大小不用改样式，
+           也避免"卡片很大字很小/字很大卡片很挤"的失衡。基准 ≈ pet-size 的 4.2%（240px → 10px） */
+        --sess-fs: max(9px, calc(var(--pet-size, 462px) * 0.045));
+        --sess-fs-sm: max(8px, calc(var(--pet-size, 462px) * 0.039));
+        --sess-pad: calc(var(--pet-size, 462px) * 0.016);
+        position: absolute;
+        top: var(--sess-panel-top, 4px);
+        /* 位置全部由 SessionsPanel.reposition() 算成**窗口内坐标**后下发：
+             --sess-panel-left  面板左缘距窗口左缘（= 宠物中心 − 半个面板宽，再夹进边界）
+             --sess-panel-top   垂直位置（宠物贴顶边时下移）
+             --sess-avail-h     工作区剩余高度
+           为什么锚点不写死在 CSS 里：宠物贴边时窗口会被 OS 裁掉一角，写死 50vw 的锚点会跟着偏。 */
+        left: var(--sess-panel-left, 50vw);
+        /* 固定自然宽。**不再**随边界收窄 —— 面板是"平移收进来"而不是"压窄"，
+           收窄会让行内文字换行、状态词挤成两行，而平移既保住了布局又保住了可读性。 */
+        width: 180px;
+        /* 高度上限 = min(顶部余量, 工作区剩余高) − 留白；超出部分面板内滚动（不压宠物头顶） */
+        max-height: min(calc(var(--pet-size, 462px) * 0.5 - 16px), var(--sess-avail-h, 100vh));
+        overflow-y: auto;
+        background: rgba(24, 24, 26, 0.7);
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        border-radius: 9px;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.26);
+        backdrop-filter: blur(14px) saturate(1.2);
+        -webkit-backdrop-filter: blur(14px) saturate(1.2);
+        z-index: 20;
+        user-select: none;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+      }
+      .dsh-sess-panel[hidden] {
+        display: none;
+      }
+      /* ---------- 贴边让位 ----------
+         面板住在宠物窗口里，而窗口**不夹取**（sendBounds 直接下发，宠物贴边时窗口随之越出屏幕），
+         会被裁的正是面板。SessionsPanel.reposition() 按宠物在**工作区**里的位置算出面板位置：
+         优先**居中于宠物**，只在会越出边界时整体平移收进来（clamp）。
+         平移只改窗口内的相对位置，宠物照常自由跨屏移动，不受影响。 */
+      /* 会话多于可视高度时面板内滚动：细滚动条，不喧宾夺主 */
+      .dsh-sess-panel::-webkit-scrollbar {
+        width: 6px;
+      }
+      .dsh-sess-panel::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.16);
+        border-radius: 3px;
+      }
+      .dsh-sess-panel::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .dsh-sess-head {
+        display: flex;
+        align-items: center;
+        padding: 1.5px calc(var(--sess-pad) + 1px) 1.5px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        font-size: var(--sess-fs-sm);
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.34);
+      }
+      /* 「恢复」：清除关闭记录，把用户 × 掉的行重新显示出来 */
+      .dsh-sess-restore {
+        margin-left: 8px;
+        width: calc(var(--pet-size, 462px) * 0.07);
+        height: calc(var(--pet-size, 462px) * 0.07);
+        min-width: 12px;
+        min-height: 12px;
+        padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: none;
+        border-radius: 50%;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.4);
+        font-size: calc(var(--pet-size, 462px) * 0.042);
+        line-height: 1;
+        cursor: pointer;
+        transition: background 0.12s ease, color 0.12s ease;
+      }
+      .dsh-sess-restore:hover {
+        background: rgba(255, 255, 255, 0.1);
+        color: rgba(255, 255, 255, 0.85);
+      }
+      /* 诊断串（临时）：面板位置一直不对，而渲染端没有可靠日志通道，所以把关键量画出来。
+         定位完连同 .dsh-sess-diag 与 sessions-panel.js 里的 _diag 一起删。 */
+      .dsh-sess-diag {
+        margin-left: auto;
+        font-size: calc(var(--pet-size, 462px) * 0.028);
+        letter-spacing: 0;
+        text-transform: none;
+        color: rgba(255, 255, 255, 0.5);
+        white-space: nowrap;
+      }
+      .dsh-sess-count {
+        margin-left: auto;
+        font-variant-numeric: tabular-nums;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      .dsh-sess-rows {
+        padding: 1.5px;
+      }
+      /* 全部被关闭时的空态提示（面板不整块消失，避免被误认为"坏了"） */
+      .dsh-sess-empty {
+        padding: 6px 8px;
+        font-size: var(--sess-fs-sm);
+        color: rgba(255, 255, 255, 0.45);
+        font-style: italic;
+      }
+      .dsh-sess-row {
+        position: relative; /* × 按钮的定位基准 */
+        display: flex;
+        align-items: flex-start;
+        gap: calc(var(--pet-size, 462px) * 0.022);
+        padding: 2px calc(var(--sess-pad) + 1px);
+        border-radius: 8px;
+        cursor: pointer;
+        transition: background 0.12s ease;
+      }
+      .dsh-sess-row:hover {
+        background: rgba(255, 255, 255, 0.07);
+      }
+      .dsh-sess-row:active {
+        background: rgba(255, 255, 255, 0.11);
+      }
+      /* 点击后短暂高亮：给出"已发出跳转请求"的即时反馈 */
+      .dsh-sess-row.opening {
+        background: rgba(76, 154, 255, 0.18);
+      }
+      /* 关闭按钮：hover 行时出现；面板没有自动消失，必须给用户收起入口 */
+      .dsh-sess-close {
+        position: absolute;
+        top: 2px;
+        right: 2px;
+        width: calc(var(--pet-size, 462px) * 0.075);
+        height: calc(var(--pet-size, 462px) * 0.075);
+        min-width: 14px;
+        min-height: 14px;
+        padding: 0;
+        border: none;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.12);
+        color: rgba(255, 255, 255, 0.75);
+        font-size: calc(var(--pet-size, 462px) * 0.042);
+        line-height: 1;
+        cursor: pointer;
+        opacity: 0;
+        transition: opacity 0.12s ease, background 0.12s ease;
+      }
+      .dsh-sess-row:hover .dsh-sess-close {
+        opacity: 1;
+      }
+      .dsh-sess-close:hover {
+        background: rgba(255, 90, 80, 0.85);
+        color: #fff;
+      }
+
+      .dsh-sess-dot {
+        flex: none;
+        width: calc(var(--pet-size, 462px) * 0.026);
+        height: calc(var(--pet-size, 462px) * 0.026);
+        margin-top: calc(var(--pet-size, 462px) * 0.014);
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.34);
+      }
+      .dsh-sess-dot.waiting {
+        background: #ffb020;
+        animation: dshSessPulse 1.6s ease-in-out infinite;
+      }
+      .dsh-sess-dot.error {
+        background: #ff5f56;
+      }
+      .dsh-sess-dot.working {
+        background: #4c9aff;
+        animation: dshSessPulse 2.2s ease-in-out infinite;
+      }
+      .dsh-sess-dot.thinking {
+        background: #9b8cff;
+        animation: dshSessPulse 2.2s ease-in-out infinite;
+      }
+      .dsh-sess-dot.success {
+        background: #35c759;
+      }
+      /* 余额通知行（session = null 的等价物）：青色、不呼吸（不是"待处理"语义） */
+      .dsh-sess-dot.balance {
+        background: #4cc9f0;
+      }
+      @keyframes dshSessPulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.35;
+        }
+      }
+      .dsh-sess-main {
+        flex: 1;
+        min-width: 0;
+      }
+      .dsh-sess-line1 {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+      }
+      .dsh-sess-project {
+        flex: none;
+        max-width: 45%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: var(--sess-fs);
+        line-height: 1.2;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.9);
+      }
+      .dsh-sess-state {
+        flex: none;
+        font-size: var(--sess-fs-sm);
+        color: rgba(255, 255, 255, 0.5);
+      }
+      .dsh-sess-progress {
+        margin-left: auto;
+        flex: none;
+        font-size: var(--sess-fs-sm);
+        font-variant-numeric: tabular-nums;
+        color: rgba(255, 255, 255, 0.5);
+        background: rgba(255, 255, 255, 0.08);
+        border-radius: 5px;
+        padding: 1px 5px;
+      }
+      .dsh-sess-task {
+        margin-top: 1px;
+        font-size: var(--sess-fs-sm);
+        line-height: 1.3;
+        color: rgba(255, 255, 255, 0.55);
+        /* 允许两行：气泡关掉后，这些文案由面板承载，一行放不下会丢信息 */
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        word-break: break-word;
+      }
+      .dsh-sess-task.empty {
+        color: rgba(255, 255, 255, 0.34);
+        font-style: italic;
+      }
     </style>
   </head>
   <body>
     <div id="root"></div>
     <div id="pet-error" class="pet-error"></div>
     <!-- 共享纯逻辑（src/shared 的 iife 构建产物，window.PetShared）——经经典 script，避开 file:// ESM 的 CORS 限制。
-         桌面端同模式拆分：constants（基础设施）→ sprite（宠物本体）→ events（事件联动）→ renderer（启动入口） -->
+         桌面端同模式拆分：constants（基础设施）→ sprite（宠物本体）→ sessions-panel（会话面板）→ events（事件联动）→ renderer（启动入口） -->
     <script src="./shared-core.js"></script>
     <script src="./constants.js"></script>
     <script src="./sprite.js"></script>
+    <script src="./sessions-panel.js"></script>
     <script src="./events.js"></script>
     <script src="./renderer.js"></script>
   </body>

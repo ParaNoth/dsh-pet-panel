@@ -52,6 +52,7 @@
   },
   "files": [
     "lib",
+    "lib/client.base.js",
     "src",
     "assets/webm",
     "runtime/electron-helper",
@@ -65,6 +66,8 @@
   "scripts": {
     "bundle": "tsdown",
     "build:desktop-core": "node scripts/build-desktop-core.mjs",
+    "build:client": "bash scripts/build-client.sh",
+    "test:panel": "node scripts/test-panel-geometry.mjs",
     "watch": "tsdown --watch",
     "ensure:electron": "node scripts/ensure-electron.mjs",
     "start:desktop": "node scripts/start-desktop.mjs",
@@ -106,6 +109,7 @@
     "@deepseek-ai/dsh-home-paths": "^0.1.1-rc.2",
     "@deepseek-ai/dsh-host-webserver": "^0.1.1-rc.2",
     "@deepseek-ai/dsh-llm": "^0.1.1-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.2",
     "react": "^18.2.0"
   },
   "devDependencies": {

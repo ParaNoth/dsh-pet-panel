@@ -8,6 +8,36 @@
 
 const S = window.PetShared;
 
+/**
+ * 窗口**顶部**余量比例（其余三边用 WINDOW_MARGIN_RATIO = 0.5）。
+ * 0.25 → 宠物 240px 时顶部留 60px：够放会话面板（约 47px）+ 一点间隙，面板因此能贴近宠物头部。
+ * 之所以能比其它三边小：气泡已由 `__dshPetBubbleEnabled` 关闭，头顶不再需要"半只宠物"的空间。
+ * **必须与 main.js 的 petWindowSize() 顶部余量保持一致**（两处不一致会让宠物位置整体偏移）。
+ */
+const PANEL_TOP_MARGIN_RATIO = 0.25;
+
+/**
+ * 窗口内**可交互区注册表**（窗口局部坐标，CSS 像素）。
+ *
+ * 背景：桌面宠物窗口默认**整窗点击穿透**，只有"光标在宠物身体命中区"时才翻转为可交互。
+ * 但窗口里还可能住着别的普通 DOM 组件（当前是会话面板），它们需要能被点击 —— 又不能让
+ * sprite 去硬编码认识每个组件。所以约定：**组件自己把"光标是否落在我身上"的判定函数注册进来**，
+ * 命中判定统一用 `interactiveRegionAt()` 查询；注册者负责在自身隐藏时返回 false。
+ */
+window.__dshPetInteractiveRegions = window.__dshPetInteractiveRegions || [];
+
+/** 光标（窗口局部坐标）是否落在任一已登记的可交互区内 */
+function interactiveRegionAt(wx, wy) {
+  for (const hit of window.__dshPetInteractiveRegions) {
+    try {
+      if (hit(wx, wy)) return true;
+    } catch {
+      // 单个登记项判定异常不应影响整条命中链路
+    }
+  }
+  return false;
+}
+
 const params = new URLSearchParams(location.search);
 const CONFIG = {
   configUrl: params.get('configUrl') || 'http://127.0.0.1:3080/dsh-pet-7340/config',

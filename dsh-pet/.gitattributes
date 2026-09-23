@@ -1,0 +1,6 @@
+# 动画素材是二进制：禁止行尾转换，避免 Git 逐行 diff 把它们当文本处理
+*.webm binary
+*.png  binary
+*.ttf  binary
+*.gif  binary
+*.mov  binary

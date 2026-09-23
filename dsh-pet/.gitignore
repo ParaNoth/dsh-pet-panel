@@ -1,0 +1,9 @@
+# 依赖（安装时由 DSH profile 提供，不入库）
+node_modules/
+
+# 编辑器 / 系统
+.DS_Store
+*.swp
+
+# 注：lib/ 下的构建产物**要入库** —— 上游发布包不含构建配置，
+# clone 后无法重新构建，必须带上才能直接安装（详见 README.fork.md）

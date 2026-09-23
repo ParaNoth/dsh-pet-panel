@@ -337,7 +337,10 @@ function petWindowSize(size) {
   const height = (size * 9) / 16;
   const bottomPad = (size * (9 / 16) * (360 - 330)) / 360;
   const m = Math.round(size * 0.5);
-  return { width: Math.round(size) + m * 2, height: Math.round(height + bottomPad) + m * 2 };
+  // 顶部余量比其它三边小（渲染端 PANEL_TOP_MARGIN_RATIO 同值）：气泡已关，头顶空间留给会话面板，
+  // 面板因此能贴近宠物头部。**两处必须一致**，否则首帧会因窗口高度不符而跳动。
+  const top = Math.round(size * 0.25);
+  return { width: Math.round(size) + m * 2, height: Math.round(height + bottomPad) + m + top };
 }
 
 /**
