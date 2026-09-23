@@ -1,5 +1,22 @@
 # dsh-pet 🐾
 
+## 🔱 这是本 fork
+
+**[`ParaNoth/dsh-pet-panel`](https://github.com/ParaNoth/dsh-pet-panel)** ——
+[`PC2005-cloud/dsh-pet`](https://github.com/PC2005-cloud/dsh-pet) 的 fork。
+在原有桌宠之上加了**会话状态面板**（常驻宠物头顶，显示每个 DSH 会话的状态，点击即切会话）、
+面板设置页开关，以及面板位置的贴边让位。
+
+- **包本体在 [`dsh-pet/`](./dsh-pet) 子目录** —— 本仓库沿用上游的 monorepo 结构，
+  根目录还有 `prompts/`、`tools/`、`video/` 等上游内容。
+  安装与开发请看 [`dsh-pet/README.md`](./dsh-pet/README.md)。
+- 改了什么、为什么这么改：[`dsh-pet/CHANGELOG.fork.md`](./dsh-pet/CHANGELOG.fork.md)
+- 本 fork 的改动是 `main` 上的提交，直接落在上游 `main` 之上 ——
+  所以可以 `git fetch upstream && git merge upstream/main` 跟上游同步。
+- **下面这份是上游原版 README**，内容仍然适用，只是没包含本 fork 新增的面板功能。
+
+---
+
 <p align="center">
   <a href="https://www.npmjs.com/package/dsh-pet"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-pet?label=npm&color=blue"></a>
   <a href="https://www.npmjs.com/package/dsh-pet"><img alt="npm monthly downloads" src="https://img.shields.io/npm/dm/dsh-pet?label=%E6%9C%88%E4%B8%8B%E8%BD%BD&color=brightgreen"></a>
