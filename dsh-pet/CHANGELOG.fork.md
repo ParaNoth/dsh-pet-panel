@@ -1,3 +1,24 @@
+# 变更记录（相对上游 dsh-pet）
+
+## 〇、仓库与血缘
+
+本仓库是 [`PC2005-cloud/dsh-pet`](https://github.com/PC2005-cloud/dsh-pet) 的 fork，
+用上游的 **monorepo 结构**：包本体在 `dsh-pet/` 子目录，仓库根保留上游的 `prompts/`、`tools/`、`video/` 等。
+
+本 fork 的改动是**一个提交**，直接落在上游 `main` 之上 —— 所以：
+
+- GitHub 上显示为正常的 fork，diff 只包含本 fork 的改动；
+- 上游有更新时可以 `git fetch upstream && git merge upstream/main`；
+- 本 fork 接的上游基点是含 `issue #56`（宿主退出后 helper 卡死）与 `issue #60`（黑屏注释修正）的 `main`，
+  比最初 fork 时用的 npm v0.2.11 多这两个修复。
+
+> 为什么是"一个提交"而不是原来的十来个：原先的仓库是在**包这一层**初始化的（仓库根 = 包根），
+> 与上游 monorepo 层级不同、没有共同祖先。为了让 fork 关系成立、能跟上游同步，
+> 改为把最终状态作为单个提交 graft 到上游 `main` 之上。逐条开发历史保留在本地分支
+> `backup-flat-e3bdb26`（以及原 fork 目录的历史）里，需要时可查。
+
+---
+
 # 变更记录（相对上游 dsh-pet v0.2.11）
 
 本文件记录这个 fork 做了什么、以及**为什么**这么做 —— 尤其是那些踩过坑才定下来的取舍，避免日后重复走弯路。

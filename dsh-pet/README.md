@@ -2,6 +2,10 @@
 
 > **这是 [dsh-pet](https://github.com/PC2005-cloud/dsh-pet) 的 fork**，在原版桌宠上加了「会话面板」：常驻显示每个 DSH 会话的状态，**点击即切会话**。
 > 上游原版说明见 [`README.upstream.md`](./README.upstream.md)；改了什么、为什么这么改见 [`CHANGELOG.fork.md`](./CHANGELOG.fork.md)。
+>
+> **仓库布局**：本 fork 沿用了上游的 monorepo 结构 —— 包本体在仓库的 `dsh-pet/` 子目录里，
+> 仓库根还有上游的 `prompts/`、`tools/`、`video/` 等（与本 fork 无关，保持原样以便跟上游同步）。
+> **本文件以及下面所有相对路径，都是相对 `dsh-pet/` 说的。**
 
 ---
 
@@ -70,7 +74,8 @@
 
 ### 客户端 bundle（`lib/client.js`）
 
-上游发布包**不含构建配置**（`tsdown.config.ts` / `tsconfig.json` 都不在 tarball 里），所以无法用原流水线重新构建。这里改为**注入式**：
+上游 **npm 发布包（tarball）不含构建配置** —— `tsdown.config.mjs` / `tsconfig*.json` 只在 GitHub 源码仓库里，
+tarball 里没有。本 fork 最初正是基于 tarball 起的，所以**当时**无法用原流水线重新构建，改成了**注入式**：
 
 - `lib/client.base.js` —— 上游原 bundle 的**原样备份**（135,546 B）
 - `scripts/inject-deeplink.py` —— 对备份做两处注入，产出 `lib/client.js`：
@@ -79,6 +84,13 @@
 - `scripts/build-client.sh` —— 调用上面的注入脚本，产出 `lib/client.js`
 
 > **为什么不"包装 factory"**：客户端 bundle 是经典 `<script>`（非模块），顶层没有 `require`（浏览器里是 `undefined`）。在顶层调用原 factory 会抛 `require is not a function` 并**打断整个 bundle**（连宠物本体一起消失）。运行期劫持 `pendingQueue`/`load` 也不可靠（加载器排空队列与脚本执行的时序无法从 bundle 内部保证）。注入进 `apply` 是唯一稳妥的形态。
+
+> ⚠️ **已知技术债**：`lib/index.js` 与 `lib/client.js` 在上游是**构建产物**（`lib` 在 `files` 里但不在源码树）。
+> 本 fork 的改动有一部分是**直接写在产物上**的，`src/` 里没有对应实现 ——
+> 也就是说现在**不能跑 `npm run bundle`**：一跑，这些改动就会被 `src/` 重新生成的产物覆盖掉。
+>
+> 另外注意：上游 monorepo 的源码树里**带着** `tsdown.config.mjs` / `tsconfig*.json`（tarball 里没有），
+> 所以"搬回 `src/` 并正常构建"这条路现在是通的，只是还没做。真要动之前，先看 `CHANGELOG.fork.md` 的「未做 / 待办」。
 
 ## 目录结构（相对上游的变化）
 
@@ -109,15 +121,17 @@ scripts/
 依赖 DSH 环境（`dsh` CLI 可用）。两种方式：
 
 ```bash
-# 方式一：直接指向本目录（推荐，源码即安装源）
-dsh plugin --profile web add file:/path/to/dsh-pet-panel
+# 先 clone（仓库是 monorepo，包在 dsh-pet/ 子目录里）
+git clone git@github.com:ParaNoth/dsh-pet-panel.git ~/Work/dsh-pet-panel
 
-# 方式二：先 clone 到本地再用 —— 不需要 npm install / 构建
-git clone <this-repo> ~/Work/dsh-pet-panel
-dsh plugin --profile web add file:~/Work/dsh-pet-panel
+# 指向包目录 —— 注意结尾是 /dsh-pet
+dsh plugin --profile web add link:$HOME/Work/dsh-pet-panel/dsh-pet
+# 或者（file: 会做硬链接拷贝，之后改源码不会自动生效，需要 scripts/sync-to-profile.sh）
+dsh plugin --profile web add file:$HOME/Work/dsh-pet-panel/dsh-pet
 ```
 
-> `file:` / `link:` 安装都**不需要** `npm install`：`lib/` 里已有构建产物，`scripts/` 里没有构建步骤。
+> `file:` / `link:` 安装都**不需要** `npm install`：`lib/` 里已有构建产物。
+> 想要"改完即生效"，用 `link:`（符号链接）指向仓库里的 `dsh-pet/`。
 > 只有当你修改了 `runtime/electron-helper/*`（宠物窗口渲染端）时，才需要下面的"开发流程"。
 
 安装后重启 `dsh web`，面板会出现在宠物旁边。
