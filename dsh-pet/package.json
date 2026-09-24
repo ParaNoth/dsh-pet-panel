@@ -81,7 +81,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:terminal": "node scripts/test-terminal-cleanup.mjs",
-    "test:all": "node scripts/test-panel-geometry.mjs && node scripts/test-terminal-cleanup.mjs"
+    "test:all": "node scripts/test-panel-geometry.mjs && node scripts/test-restore-lifo.mjs && node scripts/test-terminal-cleanup.mjs",
+    "test:restore": "node scripts/test-restore-lifo.mjs"
   },
   "license": "MIT",
   "dependencies": {

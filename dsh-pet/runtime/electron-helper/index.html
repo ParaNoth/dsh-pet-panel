@@ -244,9 +244,15 @@
         cursor: pointer;
         transition: background 0.12s ease, color 0.12s ease;
       }
-      .dsh-sess-restore:hover {
+      .dsh-sess-restore:hover:not(:disabled) {
         background: rgba(255, 255, 255, 0.1);
         color: rgba(255, 255, 255, 0.85);
+      }
+      /* 没有可恢复的行时置灰：逐条恢复后"还剩几条"是关键信息，
+         按钮不置灰的话点到底会变成"点了没反应"，只会让人以为坏了 */
+      .dsh-sess-restore:disabled {
+        opacity: 0.28;
+        cursor: default;
       }
       /* 几何自检（有意保留，非调试残留）：健康时留空、不占地方；只有算出来的边界出现
          非有限值时才显示 GEOM BAD…。渲染端没有日志通道，这是它的替代品

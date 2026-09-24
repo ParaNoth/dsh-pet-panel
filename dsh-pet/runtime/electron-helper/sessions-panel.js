@@ -115,8 +115,7 @@ class SessionsPanel {
    * 语义：**关了就一直关**（在有效期内），不再因状态变化自动冒出来。
    * 早先写成"状态一变就重新露出"，结果用户点了 × 之后会话从 working 走到 success，
    * 那一行又回来了（实测反馈）。用户的预期很简单：我关了就是关了。
-   * 会话真正结束时宿主会把它从 /sessions 里移除（终态约 60s 后清理），行自然消失；
-   * 万一某条会话长期活跃，TTL 兜底让它重新出现一次，避免永久漏看。
+   * 会话真正结束时宿主会把它从 /sessions 里移除（终态保留 24h 后才清理），行自然消失。
    */
   isDismissed(session) {
     const rec = this.dismissed[session.id];
@@ -131,6 +130,37 @@ class SessionsPanel {
     // 新签名也恰好是 ''，两者相等 → render 判定"内容没变"直接 return，行就留在屏幕上了（实测 bug）。
     // 正常重绘即可：过滤后的签名必然与上一次不同。
     this.render();
+  }
+
+  /**
+   * 还能撤回的关闭记录（按关闭时间**倒序** = 最近关掉的排最前）。
+   *
+   * 只算"当前确实在列表里、且确实被过滤掉了"的那些：
+   * 会话结束后会从 /sessions 消失，那种关闭记录已经无从恢复，不该再让 ⟲ 亮着
+   *（否则点一下什么都不会发生，用户会以为按钮坏了）。
+   */
+  restorableDismissals() {
+    return this.rawSessions
+      .filter((s) => this.dismissed[s.id])
+      .sort((a, b) => (this.dismissed[b.id]?.ts ?? 0) - (this.dismissed[a.id]?.ts ?? 0));
+  }
+
+  /**
+   * 恢复**最近关掉的那一条**（点 ⟲）。
+   *
+   * 为什么不是"一次全恢复"：那样会把你之前每次"我确实不想看这条"的决定一起推翻，
+   * 你只想救回刚误关的那条，却得把其余几条重新关一遍（用户实测反馈）。
+   * 逐条撤（后进先出）对应"我刚点错了"这一真实场景，且不动更早的决定。
+   *
+   * @returns 恢复了哪一条（null = 没有可恢复的）
+   */
+  restoreLastDismissed() {
+    const queue = this.restorableDismissals();
+    if (queue.length === 0) return null;
+    const target = queue[0];
+    delete this.dismissed[target.id];
+    this.render();
+    return target;
   }
 
   /** 创建 DOM 并启动轮询；返回 this 便于链式调用 */
@@ -149,13 +179,18 @@ class SessionsPanel {
     this.rowsEl = card.querySelector('.dsh-sess-rows');
     this.countEl = card.querySelector('.dsh-sess-count');
     this.diagEl = card.querySelector('.dsh-sess-diag');
-    // 「恢复」入口：清空关闭记录，把用户 × 掉的行重新显示出来。
-    // 没有它的话，一旦误关又记不清关了哪些，面板可能看起来"什么都不显示"而无法自救。
+    // 「恢复」入口：每点一次恢复**最近关掉的一条**（后进先出），不再一次全恢复。
+    // 没有它的话，一旦误关又记不清关了哪些，面板可能看起来"什么都不显示"而无法自救；
+    // 而"一次全恢复"又会把更早那些"确实不想看"的决定一起推翻（用户反馈）。
+    // 无可恢复项时按钮置灰（见 syncRestoreButton），避免点了没反应让人以为坏了。
     this.restoreEl = card.querySelector('.dsh-sess-restore');
     this.restoreEl.addEventListener('click', (event) => {
       event.stopPropagation();
-      this.dismissed = {};
-      this.render();
+      const restored = this.restoreLastDismissed();
+      if (restored === null) return;
+      // 提示恢复了哪一条：逐条恢复时，用户需要知道"刚回来的是哪行"，否则容易连点
+      this.restoreEl.title = '已恢复：' + (restored.project || restored.id) + '（再点恢复上一条）';
+      window.setTimeout(() => this.syncRestoreButton(), 1500);
     });
 
     // 登记为"窗口内可交互区"：sprite 的命中判定据此把面板矩形纳入可交互区，
@@ -457,6 +492,21 @@ class SessionsPanel {
     return { shown, all: all.length, signature: signature === '' ? '__empty__' : signature };
   }
 
+  /**
+   * 同步 ⟲ 的可用状态与提示。
+   *
+   * 逐条恢复之后，"还有几条能撤回"变成关键信息：按钮不置灰的话，
+   * 点到底会变成"点了没反应"，用户只会以为坏了。
+   */
+  syncRestoreButton() {
+    if (!this.restoreEl) return;
+    const n = this.restorableDismissals().length;
+    this.restoreEl.disabled = n === 0;
+    this.restoreEl.title = n === 0
+      ? '没有可恢复的行（关闭的会话结束后就无法恢复了）'
+      : '恢复最近关闭的 1 行（还可恢复 ' + n + ' 行）';
+  }
+
   render() {
     // 设置页把面板关掉时，任何一次重绘都不许把它放回屏幕（render 的各个分支都会写 el.hidden）
     if (!this.settings.enabled) {
@@ -466,6 +516,9 @@ class SessionsPanel {
     const sessions = this.rawSessions;
     // 过滤 + 签名必须与 dismiss() 用同一份计算（否则点 × 后下一次轮询会把它画回来）
     const { shown, all, signature } = this.visibleRows(sessions);
+    // 按钮可用性要在"提前 return"之前同步：会话静默结束时可见行没变化（签名相同），
+    // 但"还能撤回几条"变了 —— 放在后面会让按钮状态僵住。
+    this.syncRestoreButton();
     // 内容没变就不重绘：避免每 1.5s 重建 DOM 引起闪烁
     if (signature === this.lastSignature) return;
     this.lastSignature = signature;
@@ -479,7 +532,7 @@ class SessionsPanel {
       if (all > 0) {
         const empty = document.createElement('div');
         empty.className = 'dsh-sess-empty';
-        empty.textContent = '已全部关闭 · 点 ⟲ 恢复';
+        empty.textContent = '已全部关闭 · 点 ⟲ 逐条恢复';
         this.rowsEl.appendChild(empty);
         this.countEl.textContent = '0';
         this.el.hidden = false;
