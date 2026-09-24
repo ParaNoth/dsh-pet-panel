@@ -79,7 +79,9 @@
     "types": "node scripts/gen-types.mjs",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "test:terminal": "node scripts/test-terminal-cleanup.mjs",
+    "test:all": "node scripts/test-panel-geometry.mjs && node scripts/test-terminal-cleanup.mjs"
   },
   "license": "MIT",
   "dependencies": {

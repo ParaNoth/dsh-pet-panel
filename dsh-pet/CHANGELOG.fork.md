@@ -235,6 +235,63 @@ schema 默认 {enabled:true, side:'auto'}
 
 ---
 
+## 二·六、修「宠物用久了卡在工作中，不再接收状态更新」
+
+用户报告：宠物跑久了会一直停在"工作中"，之后不再响应新的状态更新。
+
+### 排查过程（值得记：三次判断，前两次都被证据推翻）
+
+1. 先怀疑**缺 `turn/end`**：读上游 `dsh-agent-loop` 发现 `turn/end` 在 `finally` 里 append，
+   每条 `turn/start` 必有配对 —— **不是这个原因**。
+2. 再怀疑**僵尸条目**（会话没了、状态还留着）：离线按宿主规则重放会话记录，
+   10 个会话里唯一的 `working` 就是当时正在跑的会话 —— **也不是这个原因**。
+3. 最后定位到**优先级 + TTL 的组合**：
+
+```
+WORK_STATUS_PRIORITY = { waiting:60, error:50, working:40, thinking:30, result:25, success:20 }
+```
+
+`working`(40) 高于 `thinking`(30)/`result`(25)/`success`(20)。所以只要有**一条**残留的
+`working`，它就会压住其他所有会话的状态更新，而它自己最长能留 **24 小时**（`TERMINAL_KEEP_MS`）
+—— 表现完全就是"卡在工作中，不接收新状态"。
+
+残留是怎么来的（`scheduleTerminalCleanup` 的旧写法）：
+
+```js
+if (terminalTimers.has(sessionId)) return;        // 一次性
+const t = setTimeout(() => {
+  terminalTimers.delete(sessionId);               // ← 回调开头就删了
+  if (entry.state === 'success' || entry.state === 'error') { ...删除条目... }
+}, TERMINAL_KEEP_MS);
+```
+
+计时器到点时若条目已变成 `working`（这 24h 内会话又活动过），就**不删条目**、当次也不再武装 ——
+于是它一直留着，直到该会话下次到达终态才被重新武装、再等满 TTL。
+
+> ⚠️ 更正一条我先前的错误结论：一度以为这是"永久泄漏"。**变异测试证明不是** ——
+> 因为 `has()` 的判断发生在回调 delete **之后**，所以下次仍能重排。真实影响是
+> "最长 24 小时的展示冻结"，不是永久。**别把没验证过的机制写进注释**，会误导后来人。
+
+### 修复（三层）
+
+| 层 | 做法 |
+|---|---|
+| 1. 陈旧在途状态降级 | `STALE_INFLIGHT_MS = 30min`：超过 30 分钟没有任何更新的 `working`/`thinking` 在**优先级判据里**降为 `result`（仍显示，但不再霸占最高优先级）。只降级不删条目 —— 会话可能真卡住，删了会丢信息 |
+| 2. 计时器可重排 | 每次到达终态都 `clearTimeout` 旧的再排新的；回调只在"排定之后没有任何更新"时清理（`entry.updatedAt <= armedAt`） |
+| 3. 会话销毁即刻清理 | 订阅 `session/disposed`（会话真正离开会话表 = 权威"已死"信号），立刻丢弃其状态，不必等 TTL |
+
+外加一层防御：`/sessions` 里顺手剔除 `ctx.sessions` 已不认识的会话（拿不到会话服务时跳过，
+宁可不删也不误删）。
+
+回归测试：`scripts/test-terminal-cleanup.mjs`（`npm run test:all`）—— 从 `lib/index.js` 里
+**抽出真实的 `scheduleTerminalCleanup` / `dropSessionState`** 跑，不复制公式；注入可控时钟避免
+同毫秒抖动。已做变异测试：退回旧写法必须变红。
+
+> **测试自身也踩过坑**：第一版断言用的是"活动计时器数组"，而 `fireAll()` 会把数组清空 →
+> 断言恒为 0、旧实现也能"通过"（假阳性）。改成直接断言 `terminalTimers` 这个 Map 才抓得住。
+
+---
+
 ## 三、客户端 bundle 的注入方案（`scripts/`）
 
 ### 为什么是注入而不是重新构建

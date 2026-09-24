@@ -1338,6 +1338,8 @@ function apply(ctx) {
 	} catch {
 		petPanelBase = { ...PET_PANEL_DEFAULTS };
 	}
+	/** 本插件 apply 的时刻（诊断用：判断状态表是否来自启动重放） */
+	const pluginLoadedAt = Date.now();
 	let petPanelCurrent = () => petPanelBase;
 	/** 最近一次真正生效的面板设置（序列化）：用来把"挂载/摘除的空回调"和真实变更区分开 */
 	let petPanelApplied = null;
@@ -1389,16 +1391,41 @@ function apply(ctx) {
 	const TERMINAL_KEEP_MS = 24 * 60 * 60 * 1e3;
 	/** 排一个终态清理定时器（每会话一个，已排则跳过） */
 	const scheduleTerminalCleanup = (sessionId) => {
-		if (terminalTimers.has(sessionId)) return;
+		// 重新排定：先撤掉旧计时器。
+		//
+		// 这里原来是 `if (terminalTimers.has(sessionId)) return;` + 回调里"仅当仍是终态才删"。
+		// 那个组合的问题**不是**永久泄漏（实测：回调开头已 delete，所以下次仍能重排），而是：
+		// 计时器到点时若条目已变成 `working`，条目留着**且当次不再重新武装** ——
+		// 于是这条 working 会一直留着，直到该会话下一次到达终态才被重新武装、再等满 TTL。
+		// 配合下面这条优先级规则，就是用户看到的故障：
+		//   working 优先级 40 > thinking(30)/result(25)/success(20)
+		// ⇒ 一条残留的 working 会在**最长 TTL（24h）**内压住其他所有会话的状态更新，
+		//   面板/宠物就一直显示"工作中"，看起来像"不接收新状态了"。
+		const prev = terminalTimers.get(sessionId);
+		if (prev) clearTimeout(prev);
+		const armedAt = Date.now();
 		const t = setTimeout(() => {
 			terminalTimers.delete(sessionId);
 			const entry = workStatusBySession.get(sessionId);
-			if (entry && (entry.state === "success" || entry.state === "error")) {
+			// 只在本计时器排定之后没有任何更新时才清理 —— 有条目更新就说明它又活动过，
+			// 那次活动自己会重排计时器（或者它现在是进行中状态，本就不该清）。
+			if (entry && (entry.updatedAt ?? 0) <= armedAt) {
 				workStatusBySession.delete(sessionId);
 				turnFlags.delete(sessionId);
 				refreshWorkStatus();
-			}		}, TERMINAL_KEEP_MS);
+			}
+		}, TERMINAL_KEEP_MS);
 		terminalTimers.set(sessionId, t);
+	};
+	/** 会话真正离开会话表时立刻清掉它的状态（不等 TTL）：这是"会话已死"的权威信号 */
+	const dropSessionState = (sessionId) => {
+		const t = terminalTimers.get(sessionId);
+		if (t) {
+			clearTimeout(t);
+			terminalTimers.delete(sessionId);
+		}
+		turnFlags.delete(sessionId);
+		if (workStatusBySession.delete(sessionId)) refreshWorkStatus();
 	};
 	/** 展示优先级：waiting > error > working > thinking > result > success
 	*  （result 高于 success：任何会话的进行中过渡态都不被别处已完成态压过，防中途庆祝；同档按最近更新优先） */
@@ -1411,9 +1438,29 @@ function apply(ctx) {
 		success: 20
 	};
 	/** 重算当前展示状态：所有会话里优先级最高者（同优先级取最近 seq），无活动会话 → 空闲 */
+	/**
+	 * "在途状态"的陈旧阈值：超过这么久没有任何更新的 working/thinking/result 视为**陈旧**。
+	 *
+	 * 为什么需要：`working` 的展示优先级是 40，高于 thinking(30)/result(25)/success(20)。
+	 * 一旦某个会话停在 working 却不再产生事件（turn 没结束、会话被挂起/中断、事件通道断了），
+	 * 它就会在**最长 24 小时**（TERMINAL_KEEP_MS）里压住其他所有会话的状态更新 ——
+	 * 用户看到的就是"宠物卡在工作中，不接收新的状态更新了"（实测反馈）。
+	 *
+	 * 取 30 分钟：正常会话每几秒到几分钟就有事件（工具调用/结果/步骤），半小时毫无动静
+	 * 基本可以断定这条不是"还在忙"。判定只降优先级，**不删条目**（会话可能只是卡住，
+	 * 删掉会丢失真实信息）。
+	 */
+	const STALE_INFLIGHT_MS = 30 * 60 * 1000;
+	/** 优先级判据用的有效状态：陈旧的进行中状态降级为 result（仍显示，但不再霸占最高优先级） */
+	const effectivePriorityState = (entry) => {
+		const age = Date.now() - (entry.updatedAt ?? 0);
+		if (age > STALE_INFLIGHT_MS && (entry.state === "working" || entry.state === "thinking")) return "result";
+		return entry.state;
+	};
 	const refreshWorkStatus = () => {
 		let best;
-		for (const entry of workStatusBySession.values()) if (!best || WORK_STATUS_PRIORITY[entry.state] > WORK_STATUS_PRIORITY[best.state] || WORK_STATUS_PRIORITY[entry.state] === WORK_STATUS_PRIORITY[best.state] && entry.seq > best.seq) best = entry;
+		const rank = (e) => WORK_STATUS_PRIORITY[effectivePriorityState(e)] ?? 0;
+		for (const entry of workStatusBySession.values()) if (!best || rank(entry) > rank(best) || rank(entry) === rank(best) && entry.seq > best.seq) best = entry;
 		const next = best?.state ?? null;
 		if (next === workStatus.state) return;
 		workStatus.state = next;
@@ -1424,6 +1471,23 @@ function apply(ctx) {
 	let pendOpenSession = null;
 	/** 会话列表面板（/sessions）的成品负载：只吐标量，按展示优先级 + 最近活动排序。
 	*  与 workStatus 的区别：后者是"优先级最高的那一个"聚合态，这里保留**每个会话**各自的行。 */
+	/**
+	 * 运行期真正存在的会话 id 集合；拿不到会话服务时返回 null（= 不做剔除）。
+	 *
+	 * `sessions` 不在本插件的 inject 数组里（宠物不该依赖它才能起），所以走 `ctx.get` 取可选服务。
+	 * 剔除逻辑"宁可不删也不误删"：取不到就返回 null，让调用方跳过过滤。
+	 */
+	const liveSessionIds = () => {
+		try {
+			const sessionsSvc = ctx.get("sessions");
+			if (!sessionsSvc || typeof sessionsSvc.list !== "function") return null;
+			const ids = new Set();
+			for (const sess of sessionsSvc.list()) ids.add(String(sess?.header?.id ?? sess?.id ?? ""));
+			return ids;
+		} catch {
+			return null;
+		}
+	};
 	const sessionListPayload = () => {
 		const rows = [];
 		// 状态→档位索引（与 shared/work-status.ts 的 WORK_STATUS_STATES 严格同序，只可追加）
@@ -1451,7 +1515,12 @@ function apply(ctx) {
 		} catch {
 			mainCfg = undefined;
 		}
+		// 防御性一层：状态表里若残留了运行期已不存在的会话（历史 bug 的永久泄漏、
+		// 或会话被销毁但事件没到），这里顺手剔除 —— 面板是只读投影，不该显示幽灵会话。
+		// 拿不到会话表时（服务缺席）不做剔除，宁可不删也不误删。
+		const liveIds = liveSessionIds();
 		for (const [id, entry] of workStatusBySession) {
+			if (liveIds !== null && !liveIds.has(id)) continue;
 			const todos = Array.isArray(entry.todos) ? entry.todos : [];
 			rows.push({
 				id,
@@ -2051,6 +2120,46 @@ function apply(ctx) {
 		}
 		/** 会话列表面板（/sessions）：每个活动会话一行（状态/项目/任务/待办进度），
 		*  按展示优先级排序。桌面面板 1s 轻量轮询；只读、无副作用。 */
+		// 【临时诊断】把插件自己的状态表暴露出来，用于定位"卡在工作中不再更新"。
+		// 判据：状态表里有没有 ctx.sessions 已经不认识的僵尸条目（那种条目会永久占住最高优先级）。
+		// 定位完删除。
+		if (rest === "debug-status") {
+			const now = Date.now();
+			const live = new Set();
+			try {
+				for (const s of ctx.sessions.list()) live.add(String(s.header?.id ?? s.id ?? ""));
+			} catch {}
+			const rows = [];
+			for (const [id, e] of workStatusBySession) {
+				rows.push({
+					id,
+					state: e.state,
+					seq: e.seq,
+					ageSec: Math.round((now - (e.updatedAt ?? 0)) / 1000),
+					alive: live.has(id),
+					hasTerminalTimer: terminalTimers.has(id)
+				});
+			}
+			rows.sort((a, b) => b.ageSec - a.ageSec);
+			return {
+				kind: "json",
+				status: 200,
+				obj: {
+					now,
+					/** 进程启动到现在多久（秒）：用来判断状态表是不是"启动时重放"灌进来的 */
+					uptimeSec: Math.round(process.uptime()),
+					/** 宿主加载本插件的时刻（毫秒） */
+					pluginLoadedAt: pluginLoadedAt,
+					liveSessionCount: live.size,
+					trackedCount: rows.length,
+					/** 僵尸 = 状态表里有、但 ctx.sessions 已不认识 */
+					zombieCount: rows.filter((r) => !r.alive).length,
+					/** 僵尸且年龄超过 10 分钟 = 就是"卡住"的元凶 */
+					staleWorking: rows.filter((r) => !r.alive && (r.state === "working" || r.state === "thinking") && r.ageSec > 600).length,
+					rows: rows.slice(0, 20)
+				}
+			};
+		}
 		if (rest === "sessions") {
 			if (method !== "GET") return {
 				kind: "json",
@@ -2295,8 +2404,15 @@ function apply(ctx) {
 			refreshWorkStatus();
 			if (next === "success" || next === "error") scheduleTerminalCleanup(sessionId);
 		});
+		// 会话被销毁（离开会话表）→ 立刻丢弃它的状态。
+		// 这是比 24h TTL 可靠得多的信号：TTL 只是"很久没动"的兜底，而 disposed 是"确实没了"。
+		const disposeDisposed = ctx.on("session/disposed", (session) => {
+			const sessionId = String(session?.header?.id ?? session?.id ?? "");
+			if (sessionId) dropSessionState(sessionId);
+		});
 		return () => {
 			dispose();
+			disposeDisposed();
 			for (const t of terminalTimers.values()) clearTimeout(t);
 			terminalTimers.clear();
 		};
