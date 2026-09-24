@@ -248,8 +248,9 @@
         background: rgba(255, 255, 255, 0.1);
         color: rgba(255, 255, 255, 0.85);
       }
-      /* 诊断串（临时）：面板位置一直不对，而渲染端没有可靠日志通道，所以把关键量画出来。
-         定位完连同 .dsh-sess-diag 与 sessions-panel.js 里的 _diag 一起删。 */
+      /* 几何自检（有意保留，非调试残留）：健康时留空、不占地方；只有算出来的边界出现
+         非有限值时才显示 GEOM BAD…。渲染端没有日志通道，这是它的替代品
+         —— 面板偏左那次就是靠它读出 "wa0-NaN" 一眼定位到字段名读错。 */
       .dsh-sess-diag {
         margin-left: auto;
         font-size: calc(var(--pet-size, 462px) * 0.028);
