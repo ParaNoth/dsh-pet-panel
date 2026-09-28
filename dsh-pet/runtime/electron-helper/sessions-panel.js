@@ -616,28 +616,42 @@ class SessionsPanel {
     return row;
   }
 
-  /** 点击一行：先请求宿主记下"待打开会话"，再由页面侧插件切过去；并把浏览器前置 */
+  /**
+   * 点击一行：请求宿主记下"待打开会话"，由**已连在这个宿主上的页面**切过去。
+   *
+   * 两条通道，优先级不同：
+   *   1) **轮询通道（主）**：POST /open-session 登记 → 页面侧插件每秒领取并调用
+   *      `uiWorkspace.openSession` 切换。**不打开浏览器**，所以桌面版里点击就留在 App 内
+   *      （DSH 桌面 App 只处理 `dsh://open`，没有会话级深链 —— 这是唯一"留在 App 内"的办法）。
+   *   2) **深链（兜底，仅当没有已连接的页面时）**：打开 `?session=<id>`，页面加载时读参数切过去。
+   *      什么时候需要它：宿主在跑但没有页面连着（App 窗口没开、或纯 CLI 场景）。
+   *
+   * 判定"页面在不在"：宿主在 POST 响应里回 `hasPage`（它知道有没有页面轮询过）。
+   * 有页面 → 只走通道 1，不打扰浏览器；没有 → 才用深链把页面带起来。
+   */
   async openSession(id, row) {
     row.classList.add('opening');
+    let hasPage = false;
     try {
-      await fetch(BASE + '/open-session', {
+      const res = await fetch(BASE + '/open-session', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ id }),
       });
+      const data = await res.json();
+      hasPage = Boolean(data && data.hasPage);
     } catch {
       // 宿主不可达：忽略（不打断宠物本体）
     }
-    // 把 DSH 页面打开/前置。两条通道并行，互为兜底：
-    //   1) 带 `?session=<id>` 的深链：页面（重新）加载时客户端 bundle 读到参数就切过去 —— 不依赖轮询；
-    //   2) 上面那次 POST 登记的"待打开会话"：页面已在跑轮询时由它切（同一标签页内不用重新加载）。
-    // 都复用宠物窗口早已接好的 openDshSite（preload → 主进程 shell.openExternal），不新增通道。
-    try {
-      const origin = new URL(CONFIG.configUrl).origin;
-      const url = origin + '/?session=' + encodeURIComponent(id);
-      if (window.petBridge && window.petBridge.openDshSite) window.petBridge.openDshSite(url);
-    } catch {
-      // configUrl 异常时只做跳转请求，不前置浏览器
+    if (!hasPage) {
+      // 没有已连接的页面：用深链把 DSH 页面打开并直达该会话
+      try {
+        const origin = new URL(CONFIG.configUrl).origin;
+        const url = origin + '/?session=' + encodeURIComponent(id);
+        if (window.petBridge && window.petBridge.openDshSite) window.petBridge.openDshSite(url);
+      } catch {
+        // configUrl 异常时只做跳转请求，不前置浏览器
+      }
     }
     window.setTimeout(() => row.classList.remove('opening'), 800);
   }

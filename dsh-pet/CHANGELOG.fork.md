@@ -361,3 +361,181 @@ select(sessionId) {
 - 面板标题栏留了一个**几何自检**：只有算出来的边界是 NaN 时才显示 `GEOM BAD …`，健康时留空。
   渲染端没有任何日志通道（主进程写文件在这台机器上静默失败），这个自检就是它的替代品 ——
   下次几何出问题能一眼看出是哪几个量坏了，不用再来一轮"截图猜原因"。
+
+---
+
+## 桌面版（DSH Desktop）支持
+
+### 背景：桌面版用的是**另一个 profile**
+
+DSH 桌面应用（`DeepSeek Harness.app`）不读 `~/.dsh/profiles/web`，而是自己管理
+`~/.dsh/profiles/desktop`（见 `app.asar` 里的 `resolveDesktopPaths()`）。它的 profile 模板只含
+`@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app`，所以**默认没有桌宠**；而且外部 CLI
+不允许改它（`dsh plugin --profile desktop` 会被拒绝：*managed exclusively by the Electron application*）。
+
+想在桌面版里用桌宠，得用 App 自带的运行时手工装进那个 profile：
+
+```sh
+R="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies"
+cd ~/.dsh/profiles/desktop
+"$R/node/bin/node" "$R/pnpm/bin/pnpm.cjs" add "file:/path/to/dsh-pet"
+# 再把 "dsh-pet" 追加到 package.json 的 dsh.profile.bundles
+```
+
+### 坑：未签名原生库 vs 强化运行时
+
+装完后桌面版**仍然没有宠物**，原因是宿主 bundle 顶层静态 `import` 了
+`@electron/get` 与 `@electron-internal/extract-zip`，而后者带一个**未签名**的原生库
+（`index.darwin-universal.node`，`flags=adhoc,linker-signed`）。DSH 桌面版自带的 node 签名启用了
+macOS **强化运行时**（`flags=0x10000(runtime)`），会拒绝 dlopen 未签名库：
+
+```
+Cannot find native binding. npm has a bug related to optional dependencies…
+  cause: dlopen(...index.darwin-universal.node): tried: … (code signature / library validation)
+```
+
+系统 node（自己装的，无强化运行时）没有这个限制 —— 所以**这个问题只在桌面版暴露**，
+web 版一直正常，很容易误判成"插件没装好"。
+
+**修法**：这两个模块只服务于「本机没有 Electron 时下载 Electron」这条冷路径
+（`ensureElectronDownload()` 开头就是 `if (existsSync(exe)) return exe;`），
+因此改成**按需动态 import**，顶层不再碰它们：
+
+```js
+let electronGetModule; let extractZipModule;
+async function loadElectronDownloaders() {
+  if (!electronGetModule) electronGetModule = await import("@electron/get");
+  if (!extractZipModule) extractZipModule = await import("@electron-internal/extract-zip");
+  const extract = extractZipModule.default ?? extractZipModule.extract;
+  return { downloadArtifact: electronGetModule.downloadArtifact, extract };
+}
+```
+
+改完后用桌面版内置 node 加载两个 profile 的 dsh-pet 都成功（`lib/index.js` 顶层不再触发原生库加载）。
+
+### 坑 2：`settingsScope` 在桌面版不存在（版本差异）
+
+装完之后桌面版报：
+
+```
+web boot: 1 entry did not activate
+dsh-pet: pending (waiting for service: settingsScope)
+```
+
+原因不是装错，而是**桌面版那套插件与 npm 上的版本不同代**：
+
+| | 提供的服务 |
+|---|---|
+| 桌面 App 内置 `dsh-client-ui-settings` **0.1.7-rc.2** | `settingsSchema`, `configForms`（**没有** `settingsScope`） |
+| npm 安装的（web profile 用） | `settingsSchema`, `settingsScope` |
+
+而本仓库的面板设置卡片原本把 `settingsScope` 写进了 `inject`。Cordis 的 `inject` **只支持必需依赖**
+（对象形式是「服务名 → 拦截配置」，没有可选列表），于是一个**可选功能**把整个宠物拖成 pending。
+
+**修法**：`inject` 数组里移除 `settingsScope`，卡片改为运行时探测：
+
+```js
+var __dshScope = null;
+try { __dshScope = ctx.settingsScope; } catch (e) { __dshScope = null; }
+if (!__dshScope) throw new Error('settingsScope 不可用，跳过设置卡片');
+```
+
+代价：桌面版里**设置页不会出现「会话面板」卡片**（那套版本没有该服务），
+面板开关仍需手改 `~/.dsh/dsh-pet/main-config.json`。宠物本体与面板功能不受影响。
+
+> 注入脚本 `scripts/inject-deeplink.py` 的自检也同步更新：一旦 `"settingsScope",` 重新出现在
+> `inject` 数组里就直接报错，避免以后又踩回去。
+
+### 坑 3：`ELECTRON_RUN_AS_NODE` 让 helper 退化成纯 Node（桌面版桌宠窗口不出现）
+
+**症状**：桌面版里"窗口内的宠物正常显示，但桌面上那个独立宠物窗口完全不出现"。
+
+**根因**：DSH 桌面版把内置运行时当 Node 用，因此**给它自己注入了 `ELECTRON_RUN_AS_NODE=1`**，
+而这个变量会随环境继承到**整棵子进程树**。helper 的 spawn 是 `env: {...process.env, ...}`，
+于是继承了它 —— Electron 退化成纯 Node，不提供 `electron` 模块，helper 启动即崩：
+
+```
+Error: Cannot find module 'electron'
+  Require stack:
+  - .../dsh-pet/runtime/electron-helper/main.js:31   ← require('electron')
+```
+
+宿主只看到"helper 启动失败 → 重启"，桌面上因此永远没有宠物窗口。
+`dsh web`（CLI）不受影响，因为那边环境里本来就没有这个变量 —— 又是个只在桌面版暴露的问题。
+
+**修法**：spawn 前剔除该变量（`helperEnv()`），并留注释说明为什么不能只在桌面分支处理：
+
+```js
+function helperEnv(extra) {
+  const env = { ...process.env, ...extra };
+  delete env.ELECTRON_RUN_AS_NODE;
+  return env;
+}
+```
+
+验证：在 `ELECTRON_RUN_AS_NODE=1` 的环境下按同样方式手工拉起 helper，
+进程稳定存活并正常拉取 `/dsh-pet-7340/config`（修复前会立刻抛上面那个错误退出）。
+
+> 排查提示：`Electron --version` 如果输出的是 **Node 版本号**（而不是 Electron 版本）且
+> `require('electron')` 失败，那就是 `ELECTRON_RUN_AS_NODE` 在作祟，不是 Electron 装坏了。
+
+### 坑 4：`sessions.open` 在新版客户端不存在（桌面版会话跳转失效）
+
+**症状**：桌面版里点面板上的会话行，浏览器打开了但**没切到该会话**。
+
+**根因**：会话"打开/选中"的 API 换代了：
+
+| 版本 | 打开会话的 API |
+|---|---|
+| npm 上的 0.1.5-rc.1（web profile 用） | `sessions.open(id)` **和** `uiWorkspace.openSession(id)` |
+| DSH 桌面版 0.1.7-rc.2 | `sessions` 已改版（只有 `retain`/`using`/`scope`/`search`/`fork`/...，**没有 `open`**）；选中会话由 **`uiWorkspace.openSession(target)`** 承担 |
+
+`uiWorkspace.openSession` 的契约（Inspect 实测）：*"Select a Session and show its Conversation as one UI navigation action."*
+
+**修法**：深链改为**优先 `uiWorkspace.openSession`、回退 `sessions.open`**（顺序反过来则新版直接抛
+`sessions.open is not a function`）。两者都不可用时打印明确告警，便于日后 API 再变时定位。
+桩测覆盖两条路径：
+
+```
+新版(uiWorkspace): ✅ session-xyz   via=uiWorkspace.openSession
+旧版(sessions):    ✅ session-xyz   via=sessions.open
+```
+
+### 坑 5：桌面版点面板会"跳出到系统浏览器"（已修）
+
+**背景**：DSH 桌面 App 注册的 URL scheme 是 `dsh://`，而它**只处理 `dsh://open`（聚焦主窗口）**，
+没有会话级深链（`app.on("open-url")` 里就那一个分支）；命令行也不解析会话参数
+（`second-instance` 只做 `focusOwner`）。所以"打开 `?session=<id>`"在桌面版下必然是
+**打开系统浏览器**，而不是切到 App 自己的窗口。
+
+**修法**：恢复并加固「面板 → 页面」的轮询通道，让点击留在 App 内：
+
+```
+面板点击 ──POST──▶ 宿主 /dsh-pet-7340/open-session   （登记 {id, nonce}）
+                        │
+   已连在该宿主上的页面 ◀──GET（每秒）── 领取 {sessionId, nonce}
+                        │
+                  调 uiWorkspace.openSession(id)  ← App 自己的窗口内切换
+                        │
+                   GET ?ack=<nonce>  ← 告诉宿主已处理，避免重复切
+```
+
+三条工程决定（都有理由，别随手改）：
+
+1. **用轮询而不是 WebSocket/SSE**：宿主侧只要一个内存变量 + 一个 GET 端点，没有长连接生命周期要管。
+2. **失败不 ack**：`openSession` 抛错时保留待打开状态，下次轮询自动重试（会话列表可能还没就绪）。
+3. **深链保留为兜底，由宿主的 `hasPage` 决定走哪条**：宿主在 POST 响应里回
+   `hasPage = 最近 5 秒内有页面轮询过`。
+   - 有页面（桌面版常态）→ 只走通道，**不打开浏览器**；
+   - 没有页面（App 窗口没开 / 纯 CLI）→ 退回深链 `?session=`，把页面打开并直达该会话。
+
+   这样"桌面版留在 App 内"和"CLI 下仍能跳转"两个诉求同时满足。
+
+桩测（覆盖完整握手）：
+
+```
+轮询定时器: 1 个
+轮询调用: /dsh-pet-7340/open-session , /dsh-pet-7340/open-session?ack=nonce-1
+打开会话: ✅ session-abc
+已 ack: ✅ nonce-1
+```

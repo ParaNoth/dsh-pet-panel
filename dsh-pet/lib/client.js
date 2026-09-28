@@ -3931,11 +3931,15 @@ function makeFactory() {
 		});
 		const name = "pet";
 		const inject = [
-			// 由 inject-deeplink.py 注入：深链要 ctx.sessions.open(id)，
-			// 设置卡片要 ctx.settingsScope 读写 dsh-pet 命名空间。
-			// 都声明为硬依赖：Cordis 会等这两个服务就绪再 apply。
+			// 由 inject-deeplink.py 注入：深链要 ctx.sessions.open(id)，声明为硬依赖，
+			// Cordis 会等它就绪再 apply。
+			//
+			// settingsScope 故意不在这里：inject 只支持必需依赖（对象形式是「服务名 → 拦截配置」，
+			// 没有可选列表）。把设置卡片需要的它写成硬依赖，整个宠物会在缺该服务的宿主里 pending
+			// 起不来 —— DSH 桌面版（profile=desktop）的插件树就没有它，实测报
+			// `dsh-pet: pending (waiting for service: settingsScope)` 并使 web boot 失败。
+			// 卡片改为运行时探测（见 SETTINGS_CARD_SRC），缺服务时静默跳过。
 			"sessions",
-			"settingsScope",
 			"slots",
 			"locale",
 			"connection",
@@ -4002,25 +4006,44 @@ function makeFactory() {
 					var __dshSid = null;
 					try { __dshSid = new URLSearchParams(window.location.search).get('session'); } catch (e) {}
 					if (__dshSid) {
-						// 客户端会话服务：声明在 inject 里，所以优先直接取；取不到再退回 ctx.get
-						var __dshSessions = null;
-						try { __dshSessions = ctx.sessions; } catch (e) {}
-						if (!__dshSessions) { try { __dshSessions = ctx.get('sessions'); } catch (e) {} }
-						if (__dshSessions && typeof __dshSessions.open === 'function') {
+						// 打开会话的 API 有两代，**必须优先用 uiWorkspace.openSession**：
+						//   * 新版（DSH 桌面版 0.1.7-rc.2 等）：sessions 服务已改版，只有 retain/using/scope 等，
+						//     **没有 open()**；选中会话由 uiWorkspace.openSession(id) 承担；
+						//   * 旧版（npm 上的 0.1.5-rc.1）：uiWorkspace.openSession 与 sessions.open 都有。
+						// 反过来优先 sessions.open 的话，新版会直接抛 `sessions.open is not a function`。
+						// 两个都取不到才放弃（并留日志，便于日后 API 再变时定位）。
+						var __dshOpenSession = null;
+						var __dshVia = 'none';
+						var __dshWs = null;
+						try { __dshWs = ctx.get('uiWorkspace'); } catch (e) {}
+						if (__dshWs && typeof __dshWs.openSession === 'function') {
+							__dshOpenSession = function (id) { return __dshWs.openSession(id); };
+							__dshVia = 'uiWorkspace.openSession';
+						} else {
+							var __dshSessions = null;
+							try { __dshSessions = ctx.sessions; } catch (e) {}
+							if (!__dshSessions) { try { __dshSessions = ctx.get('sessions'); } catch (e) {} }
+							if (__dshSessions && typeof __dshSessions.open === 'function') {
+								__dshOpenSession = function (id) { return __dshSessions.open(id); };
+								__dshVia = 'sessions.open';
+							}
+						}
+						if (__dshOpenSession) {
+							console.log('[dsh-pet] deeplink: via=' + __dshVia);
 							// 先清地址参数：避免刷新重复跳转
 							try {
 								var __dshU = new URL(window.location.href);
 								__dshU.searchParams.delete('session');
 								window.history.replaceState(null, '', __dshU.pathname + __dshU.search + __dshU.hash);
 							} catch (e) {}
-							// 等待会话列表就绪再打开：sessions.select 对**不在列表里**的 id 会抛
-							// `sessions.select: unknown session <id>`，而页面刚加载时列表往往还没拉回来，
+							// 等待会话列表就绪再打开：对**不在列表里**的 id 会抛
+							// `unknown session <id>`，而页面刚加载时列表往往还没拉回来，
 							// 所以这里轮询重试（最多 25 次 × 400ms ≈ 10s），成功即停。
 							var __dshTry = 0;
 							var __dshAttempt = function () {
 								__dshTry++;
 								try {
-									__dshSessions.open(__dshSid);
+									__dshOpenSession(__dshSid);
 									console.log('[dsh-pet] deeplink: opened ' + __dshSid + ' (try ' + __dshTry + ')');
 								} catch (e) {
 									if (__dshTry < 25) window.setTimeout(__dshAttempt, 400);
@@ -4028,9 +4051,64 @@ function makeFactory() {
 								}
 							};
 							window.setTimeout(__dshAttempt, 300);
+						} else {
+							console.warn('[dsh-pet] deeplink: 找不到可用的会话打开 API（uiWorkspace.openSession / sessions.open 都不可用），已跳过');
 						}
 					}
 				} catch (e) { console.warn('[dsh-pet] deeplink install failed:', e); }
+				// ---- 面板→页面 的会话切换通道（轮询）----
+				// 面板把「要打开的会话」POST 给宿主 /open-session，这里轮询领取并在页面内在切换。
+				// 用轮询而不是 WebSocket/SSE：宿主侧只需一个内存变量 + 一个 GET 端点，最不容易坏。
+				var __dshOpenSessionForPanel = null;
+				try {
+					var __dshWs = null;
+					try { __dshWs = ctx.get('uiWorkspace'); } catch (e) {}
+					if (__dshWs && typeof __dshWs.openSession === 'function') {
+						__dshOpenSessionForPanel = function (id) { return __dshWs.openSession(id); };
+					} else {
+						var __dshSessions = null;
+						try { __dshSessions = ctx.sessions; } catch (e) {}
+						if (__dshSessions && typeof __dshSessions.open === 'function') {
+							__dshOpenSessionForPanel = function (id) { return __dshSessions.open(id); };
+						}
+					}
+				} catch (e) {}
+				if (__dshOpenSessionForPanel) {
+					var __dshOpenEndpoint = '/dsh-pet-7340/open-session';
+					/** 已处理过的 nonce：同一次请求只切一次（宿主在 ack 之前会重复返回同一条） */
+					var __dshLastNonce = null;
+					var __dshPollBusy = false;
+					var __dshPollTick = function () {
+						if (__dshPollBusy) return;
+						__dshPollBusy = true;
+						fetch(__dshOpenEndpoint, { cache: 'no-store' }).then(function (res) {
+							if (!res.ok) throw new Error('HTTP ' + res.status);
+							return res.json();
+						}).then(function (data) {
+							__dshPollBusy = false;
+							var id = data && data.sessionId ? String(data.sessionId) : null;
+							var nonce = data && data.nonce ? String(data.nonce) : null;
+							if (!id || !nonce || nonce === __dshLastNonce) return;
+							__dshLastNonce = nonce;
+							try {
+								__dshOpenSessionForPanel(id);
+								console.log('[dsh-pet] panel open: ' + id);
+							} catch (e) {
+								console.warn('[dsh-pet] panel open failed:', e);
+								return; // 失败不 ack：下次轮询会重试同一条
+							}
+							// ack：让宿主清掉待打开状态（否则每次轮询都会重复切）
+							fetch(__dshOpenEndpoint + '?ack=' + encodeURIComponent(nonce), { cache: 'no-store' }).catch(function () {});
+						}).catch(function () {
+							// 宿主不可达（重启中/CLI 未启动）：静默重试，面板功能不受影响
+							__dshPollBusy = false;
+						});
+					};
+					window.setInterval(__dshPollTick, 1000);
+					console.log('[dsh-pet] panel open channel started (poll every 1000ms)');
+				} else {
+					console.warn('[dsh-pet] panel open channel: 找不到可用的会话打开 API，已跳过');
+				}
 				// ---- 会话面板设置卡片（注入）----
 				// 目的：把面板总开关与位置放进设置页，用户不必手改 main-config.json。
 				// 为什么注册到 settings.plugin.item，而不是改宠物自己的「宠物配置」分区：
@@ -4041,13 +4119,18 @@ function makeFactory() {
 				// 用 slots.inject 而不是直接 register：slot 由 ui-settings-plugins 声明，两者激活
 				//   顺序没有约束，inject 会等 slot 上线再注册（上游卡片也是这么做的）。
 				try {
+					// 运行时探测 settingsScope（不是硬依赖，见 inject 数组处说明）：
+					// 宿主没有该服务时跳过设置卡片，宠物本体照常工作。
+					var __dshScope = null;
+					try { __dshScope = ctx.settingsScope; } catch (e) { __dshScope = null; }
+					if (!__dshScope) throw new Error('settingsScope 不可用，跳过设置卡片');
 					var __dshPanelCard = makePanelSettingsCard({
 						// 这里的 h 是 react/jsx-runtime 的 jsx：子节点要放进 props.children
 						//（不是 createElement 的第 3+ 个参数），卡片文件里已按此约定书写。
 						h: h,
 						useState: useState,
 						useEffect: useEffect,
-						scope: ctx.settingsScope.bind({ namespace: PANEL_SETTINGS_NS })
+						scope: __dshScope.bind({ namespace: PANEL_SETTINGS_NS })
 					});
 					ctx.slots.inject("settings.plugin.item", function* () {
 						yield ctx.slots.register({

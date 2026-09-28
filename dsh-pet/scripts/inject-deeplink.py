@@ -55,15 +55,23 @@ INJECT_ADDED = (
     I(2)
     + "const inject = [\n"
     + I(3)
-    + "// 由 inject-deeplink.py 注入：深链要 ctx.sessions.open(id)，\n"
+    + "// 由 inject-deeplink.py 注入：深链要 ctx.sessions.open(id)，声明为硬依赖，\n"
     + I(3)
-    + "// 设置卡片要 ctx.settingsScope 读写 dsh-pet 命名空间。\n"
+    + "// Cordis 会等它就绪再 apply。\n"
     + I(3)
-    + "// 都声明为硬依赖：Cordis 会等这两个服务就绪再 apply。\n"
+    + "//\n"
+    + I(3)
+    + "// settingsScope 故意不在这里：inject 只支持必需依赖（对象形式是「服务名 → 拦截配置」，\n"
+    + I(3)
+    + "// 没有可选列表）。把设置卡片需要的它写成硬依赖，整个宠物会在缺该服务的宿主里 pending\n"
+    + I(3)
+    + "// 起不来 —— DSH 桌面版（profile=desktop）的插件树就没有它，实测报\n"
+    + I(3)
+    + "// `dsh-pet: pending (waiting for service: settingsScope)` 并使 web boot 失败。\n"
+    + I(3)
+    + "// 卡片改为运行时探测（见 SETTINGS_CARD_SRC），缺服务时静默跳过。\n"
     + I(3)
     + '"sessions",\n'
-    + I(3)
-    + '"settingsScope",\n'
     + I(3)
     + '"slots",'
 )
@@ -73,25 +81,44 @@ DEEPLINK_SRC = """try {
 \tvar __dshSid = null;
 \ttry { __dshSid = new URLSearchParams(window.location.search).get('session'); } catch (e) {}
 \tif (__dshSid) {
-\t\t// 客户端会话服务：声明在 inject 里，所以优先直接取；取不到再退回 ctx.get
-\t\tvar __dshSessions = null;
-\t\ttry { __dshSessions = ctx.sessions; } catch (e) {}
-\t\tif (!__dshSessions) { try { __dshSessions = ctx.get('sessions'); } catch (e) {} }
-\t\tif (__dshSessions && typeof __dshSessions.open === 'function') {
+\t\t// 打开会话的 API 有两代，**必须优先用 uiWorkspace.openSession**：
+\t\t//   * 新版（DSH 桌面版 0.1.7-rc.2 等）：sessions 服务已改版，只有 retain/using/scope 等，
+\t\t//     **没有 open()**；选中会话由 uiWorkspace.openSession(id) 承担；
+\t\t//   * 旧版（npm 上的 0.1.5-rc.1）：uiWorkspace.openSession 与 sessions.open 都有。
+\t\t// 反过来优先 sessions.open 的话，新版会直接抛 `sessions.open is not a function`。
+\t\t// 两个都取不到才放弃（并留日志，便于日后 API 再变时定位）。
+\t\tvar __dshOpenSession = null;
+\t\tvar __dshVia = 'none';
+\t\tvar __dshWs = null;
+\t\ttry { __dshWs = ctx.get('uiWorkspace'); } catch (e) {}
+\t\tif (__dshWs && typeof __dshWs.openSession === 'function') {
+\t\t\t__dshOpenSession = function (id) { return __dshWs.openSession(id); };
+\t\t\t__dshVia = 'uiWorkspace.openSession';
+\t\t} else {
+\t\t\tvar __dshSessions = null;
+\t\t\ttry { __dshSessions = ctx.sessions; } catch (e) {}
+\t\t\tif (!__dshSessions) { try { __dshSessions = ctx.get('sessions'); } catch (e) {} }
+\t\t\tif (__dshSessions && typeof __dshSessions.open === 'function') {
+\t\t\t\t__dshOpenSession = function (id) { return __dshSessions.open(id); };
+\t\t\t\t__dshVia = 'sessions.open';
+\t\t\t}
+\t\t}
+\t\tif (__dshOpenSession) {
+\t\t\tconsole.log('[dsh-pet] deeplink: via=' + __dshVia);
 \t\t\t// 先清地址参数：避免刷新重复跳转
 \t\t\ttry {
 \t\t\t\tvar __dshU = new URL(window.location.href);
 \t\t\t\t__dshU.searchParams.delete('session');
 \t\t\t\twindow.history.replaceState(null, '', __dshU.pathname + __dshU.search + __dshU.hash);
 \t\t\t} catch (e) {}
-\t\t\t// 等待会话列表就绪再打开：sessions.select 对**不在列表里**的 id 会抛
-\t\t\t// `sessions.select: unknown session <id>`，而页面刚加载时列表往往还没拉回来，
+\t\t\t// 等待会话列表就绪再打开：对**不在列表里**的 id 会抛
+\t\t\t// `unknown session <id>`，而页面刚加载时列表往往还没拉回来，
 \t\t\t// 所以这里轮询重试（最多 25 次 × 400ms ≈ 10s），成功即停。
 \t\t\tvar __dshTry = 0;
 \t\t\tvar __dshAttempt = function () {
 \t\t\t\t__dshTry++;
 \t\t\t\ttry {
-\t\t\t\t\t__dshSessions.open(__dshSid);
+\t\t\t\t\t__dshOpenSession(__dshSid);
 \t\t\t\t\tconsole.log('[dsh-pet] deeplink: opened ' + __dshSid + ' (try ' + __dshTry + ')');
 \t\t\t\t} catch (e) {
 \t\t\t\t\tif (__dshTry < 25) window.setTimeout(__dshAttempt, 400);
@@ -99,6 +126,8 @@ DEEPLINK_SRC = """try {
 \t\t\t\t}
 \t\t\t};
 \t\t\twindow.setTimeout(__dshAttempt, 300);
+\t\t} else {
+\t\t\tconsole.warn('[dsh-pet] deeplink: 找不到可用的会话打开 API（uiWorkspace.openSession / sessions.open 都不可用），已跳过');
 \t\t}
 \t}
 } catch (e) { console.warn('[dsh-pet] deeplink install failed:', e); }"""
@@ -114,13 +143,18 @@ SETTINGS_CARD_SRC = """// ---- 会话面板设置卡片（注入）----
 // 用 slots.inject 而不是直接 register：slot 由 ui-settings-plugins 声明，两者激活
 //   顺序没有约束，inject 会等 slot 上线再注册（上游卡片也是这么做的）。
 try {
+	// 运行时探测 settingsScope（不是硬依赖，见 inject 数组处说明）：
+	// 宿主没有该服务时跳过设置卡片，宠物本体照常工作。
+	var __dshScope = null;
+	try { __dshScope = ctx.settingsScope; } catch (e) { __dshScope = null; }
+	if (!__dshScope) throw new Error('settingsScope 不可用，跳过设置卡片');
 \tvar __dshPanelCard = makePanelSettingsCard({
 \t\t// 这里的 h 是 react/jsx-runtime 的 jsx：子节点要放进 props.children
 \t\t//（不是 createElement 的第 3+ 个参数），卡片文件里已按此约定书写。
 \t\th: h,
 \t\tuseState: useState,
 \t\tuseEffect: useEffect,
-\t\tscope: ctx.settingsScope.bind({ namespace: PANEL_SETTINGS_NS })
+\t\tscope: __dshScope.bind({ namespace: PANEL_SETTINGS_NS })
 \t});
 \tctx.slots.inject("settings.plugin.item", function* () {
 \t\tyield ctx.slots.register({
@@ -130,6 +164,67 @@ try {
 \t});
 } catch (e) { console.warn('[dsh-pet] settings card install failed:', e); }"""
 
+# ---------------------------------------------------------------- 注入 3.5：面板点击的轮询通道
+# 为什么需要它（桌面版场景）：
+#   面板点击时走 shell.openExternal 打开 `?session=<id>` 会**跳出到系统浏览器**，因为 DSH 桌面
+#   App 的 URL scheme 只处理 `dsh://open`（聚焦窗口），没有会话级深链。
+#   所以桌面版改为：面板 POST /open-session 登记目标 → **已连在这个宿主上的页面**（就是 App 自己的
+#   窗口）轮询领取 → 调 openSession 切过去。这样点击就留在 App 内，不打开浏览器。
+#   与深链通道并存、互不冲突：同一标签页内由本通道切；地址栏带参时由深链兜底。
+POLL_SRC = """// ---- 面板→页面 的会话切换通道（轮询）----
+// 面板把「要打开的会话」POST 给宿主 /open-session，这里轮询领取并在页面内在切换。
+// 用轮询而不是 WebSocket/SSE：宿主侧只需一个内存变量 + 一个 GET 端点，最不容易坏。
+var __dshOpenSessionForPanel = null;
+try {
+\tvar __dshWs = null;
+\ttry { __dshWs = ctx.get('uiWorkspace'); } catch (e) {}
+\tif (__dshWs && typeof __dshWs.openSession === 'function') {
+\t\t__dshOpenSessionForPanel = function (id) { return __dshWs.openSession(id); };
+\t} else {
+\t\tvar __dshSessions = null;
+\t\ttry { __dshSessions = ctx.sessions; } catch (e) {}
+\t\tif (__dshSessions && typeof __dshSessions.open === 'function') {
+\t\t\t__dshOpenSessionForPanel = function (id) { return __dshSessions.open(id); };
+\t\t}
+\t}
+} catch (e) {}
+if (__dshOpenSessionForPanel) {
+\tvar __dshOpenEndpoint = '/dsh-pet-7340/open-session';
+\t/** 已处理过的 nonce：同一次请求只切一次（宿主在 ack 之前会重复返回同一条） */
+\tvar __dshLastNonce = null;
+\tvar __dshPollBusy = false;
+\tvar __dshPollTick = function () {
+\t\tif (__dshPollBusy) return;
+\t\t__dshPollBusy = true;
+\t\tfetch(__dshOpenEndpoint, { cache: 'no-store' }).then(function (res) {
+\t\t\tif (!res.ok) throw new Error('HTTP ' + res.status);
+\t\t\treturn res.json();
+\t\t}).then(function (data) {
+\t\t\t__dshPollBusy = false;
+\t\t\tvar id = data && data.sessionId ? String(data.sessionId) : null;
+\t\t\tvar nonce = data && data.nonce ? String(data.nonce) : null;
+\t\t\tif (!id || !nonce || nonce === __dshLastNonce) return;
+\t\t\t__dshLastNonce = nonce;
+\t\t\ttry {
+\t\t\t\t__dshOpenSessionForPanel(id);
+\t\t\t\tconsole.log('[dsh-pet] panel open: ' + id);
+\t\t\t} catch (e) {
+\t\t\t\tconsole.warn('[dsh-pet] panel open failed:', e);
+\t\t\t\treturn; // 失败不 ack：下次轮询会重试同一条
+\t\t\t}
+\t\t\t// ack：让宿主清掉待打开状态（否则每次轮询都会重复切）
+\t\t\tfetch(__dshOpenEndpoint + '?ack=' + encodeURIComponent(nonce), { cache: 'no-store' }).catch(function () {});
+\t\t}).catch(function () {
+\t\t\t// 宿主不可达（重启中/CLI 未启动）：静默重试，面板功能不受影响
+\t\t\t__dshPollBusy = false;
+\t\t});
+\t};
+\twindow.setInterval(__dshPollTick, 1000);
+\tconsole.log('[dsh-pet] panel open channel started (poll every 1000ms)');
+} else {
+\tconsole.warn('[dsh-pet] panel open channel: 找不到可用的会话打开 API，已跳过');
+}"""
+
 # ---------------------------------------------------------------- 注入 4：卡片本体
 CARD_ANCHOR = "//#region src/client/index.ts\nwindow.__ModuleLoader__.load({"
 CARD_HEAD = "//#region dsh-pet 面板设置卡片（注入自 scripts/panel-settings-card.js，勿手改此处）\n"
@@ -138,9 +233,10 @@ CARD_TAIL = "\n//#endregion\n" + CARD_ANCHOR
 # 注入后必须出现的标记（少一个就说明某处注入没生效）
 MARKERS = (
     "makePanelSettingsCard",
+    "panel open channel started",
     "PANEL_SETTINGS_NS",
     '"sessions",',
-    '"settingsScope",',
+    "__dshScope",
     "settings.plugin.item",
     "URLSearchParams(window.location.search)",
 )
@@ -182,7 +278,7 @@ def main():
     if at is None:
         sys.stderr.write("inject-deeplink: 未找到 apply 闭合行，注入中止\n")
         return 1
-    block = (indent_block(DEEPLINK_SRC, 4) + "\n" + indent_block(SETTINGS_CARD_SRC, 4)).split("\n")
+    block = (indent_block(DEEPLINK_SRC, 4) + "\n" + indent_block(POLL_SRC, 4) + "\n" + indent_block(SETTINGS_CARD_SRC, 4)).split("\n")
     lines = lines[:at] + block + lines[at:]
     text = "\n".join(lines)
 
@@ -201,9 +297,12 @@ def main():
         if marker not in text:
             sys.stderr.write("inject-deeplink: 注入后缺少标记 %s\n" % marker)
             return 1
-    # inject 数组里 settingsScope 只能出现一次（重复声明会让 Cordis 报重复依赖）
-    if text.count('"settingsScope",') != 1:
-        sys.stderr.write("inject-deeplink: inject 数组里 settingsScope 次数异常\n")
+    # settingsScope 不能是硬依赖：可选能力，声明成必需会让缺该服务的宿主整个宠物 pending
+    if '"settingsScope",' in text:
+        sys.stderr.write("inject-deeplink: settingsScope 不能作为硬依赖出现在 inject 数组\n")
+        return 1
+    if "__dshScope" not in text:
+        sys.stderr.write("inject-deeplink: 设置卡片缺少 settingsScope 运行时探测\n")
         return 1
 
     open(dst, "w", encoding="utf-8").write(text)

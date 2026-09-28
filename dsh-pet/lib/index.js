@@ -8,8 +8,24 @@ import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { BlockAssembler, ReasoningEffortId, createAssistantMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { downloadArtifact } from "@electron/get";
-import extract from "@electron-internal/extract-zip";
+/*
+ * `@electron/get` 与 `@electron-internal/extract-zip` 改为**按需动态加载**（见 ensureElectronDownload）。
+ *
+ * 原因（实测）：extract-zip 依赖一个未签名的原生库（ad-hoc linker-signed）。DSH 桌面版自带的
+ * node 启用了 macOS 强化运行时（flags=0x00010000 runtime），会拒绝 dlopen 未签名库；而顶层静态
+ * import 会让**整个宿主 bundle 加载失败**——表现是桌面版里宠物直接不出现。系统 node（无强化运行时）
+ * 则不受影响，所以这个问题只在桌面版暴露。
+ *
+ * 这两个模块只用于「本机没有 Electron 时下载 Electron」这一条冷路径，动态加载完全够用。
+ */
+let electronGetModule;   // 惰性缓存的 @electron/get
+let extractZipModule;    // 惰性缓存的 @electron-internal/extract-zip
+async function loadElectronDownloaders() {
+	if (!electronGetModule) electronGetModule = await import("@electron/get");
+	if (!extractZipModule) extractZipModule = await import("@electron-internal/extract-zip");
+	const extract = extractZipModule.default ?? extractZipModule.extract;
+	return { downloadArtifact: electronGetModule.downloadArtifact, extract };
+}
 import z from "@deepseek-ai/schemastery";
 
 //#region src/host/balance.ts
@@ -987,6 +1003,7 @@ async function ensureElectronDownload(options = {}) {
 		timer.unref?.();
 		let nextLogAt = Date.now() + 3e3;
 		try {
+			const { downloadArtifact, extract } = await loadElectronDownloaders();
 			const zipPath = await downloadArtifact({
 				version: `v${version}`,
 				artifactName: "electron",
@@ -1027,6 +1044,30 @@ function defaultLaunch(options = {}) {
 		args: [helperPath]
 	};
 }
+/**
+ * 组装桌面 Helper 的环境变量。
+ *
+ * **必须剔除 `ELECTRON_RUN_AS_NODE`**：它会让 Electron 退化成纯 Node 运行（不加载 Electron
+ * 运行时、不提供 `electron` 模块）。DSH 桌面版（DSH Desktop）正是靠它把内置运行时当 Node 用，
+ * 并且会把它注入**整棵子进程树**—— 于是宿主 spawn 出来的 helper 也继承了它，启动即崩：
+ *
+ *     Error: Cannot find module 'electron'
+ *       at runtime/electron-helper/main.js:31  →  require('electron')
+ *
+ * 症状是"窗口内的宠物正常、桌面上的宠物窗口完全不出现"（helper 悄悄崩了，宿主只当它重启失败）。
+ * CLI 场景（`dsh web`）不受影响，因为那里本来就没有这个变量 —— 所以这个问题只在桌面版暴露。
+ *
+ * @param extra 调用方要额外叠加的环境变量
+ * @returns 供 spawn 使用的环境变量副本
+ */
+function helperEnv(extra) {
+	const env = {
+		...process.env,
+		...extra
+	};
+	delete env.ELECTRON_RUN_AS_NODE;
+	return env;
+}
 var HelperProcess = class {
 	constructor(options = {}, logger = console) {
 		this.options = options;
@@ -1050,10 +1091,8 @@ var HelperProcess = class {
 		const args = this.options.args || launch.args;
 		const child = spawn(command, args, {
 			cwd: this.options.cwd || packageRoot,
-			env: {
-				...process.env,
-				...this.options.env
-			},
+			// 必须剔除 ELECTRON_RUN_AS_NODE：见 helperEnv 的说明（DSH 桌面版把它注入了整个进程树）
+			env: helperEnv(this.options.env),
 			stdio: [
 				"pipe",
 				"pipe",
@@ -1469,6 +1508,9 @@ function apply(ctx) {
 	/** 会话跳转握手状态（/open-session）：面板 POST 写入，页面侧 GET 领取并 ack 清空。
 	*  进程内内存态：重启即丢（跳转本来就是瞬时意图）。 */
 	let pendOpenSession = null;
+	/** 最近一次页面轮询 /open-session 的时间戳；null = 还没有页面连过来。
+	*  面板据此决定"页面已在跑 → 只走通道不打扰浏览器"还是"没有页面 → 用深链把页面带起来"。 */
+	let lastOpenPollAt = null;
 	/** 会话列表面板（/sessions）的成品负载：只吐标量，按展示优先级 + 最近活动排序。
 	*  与 workStatus 的区别：后者是"优先级最高的那一个"聚合态，这里保留**每个会话**各自的行。 */
 	/**
@@ -2203,11 +2245,18 @@ function apply(ctx) {
 				return {
 					kind: "json",
 					status: 200,
-					obj: { ok: true, nonce: pendOpenSession.nonce },
+					// hasPage：最近 5 秒内有页面轮询过 → 面板只走通道、不打开浏览器；
+					// 否则面板用深链（?session=）把页面打开并直达该会话。
+					obj: {
+						ok: true,
+						nonce: pendOpenSession.nonce,
+						hasPage: lastOpenPollAt !== null && Date.now() - lastOpenPollAt < 5000
+					},
 					headers: noStore
 				};
 			}
 			if (method === "GET") {
+				lastOpenPollAt = Date.now();
 				const ack = url.searchParams.get("ack");
 				if (ack && pendOpenSession && pendOpenSession.nonce === ack) pendOpenSession = null;
 				if (!pendOpenSession) return {
