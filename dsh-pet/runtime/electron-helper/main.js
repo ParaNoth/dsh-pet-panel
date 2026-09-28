@@ -729,6 +729,39 @@ app.whenReady().then(() => {
     });
   });
 
+  /**
+   * 把 DSH 桌面 App 带到前台（恢复最小化 + 聚焦）。
+   *
+   * 为什么需要单独一条通道：`pet:open-site` 只放行 http(s)（有意为之，避免宠物窗口成为
+   * 任意 URL 的执行入口）。而"唤起 App"必须走它注册的自定义 scheme —— DSH 桌面 App 注册了
+   * `dsh://`，且**只处理 `dsh://open`**（`app.on("open-url")` 里就这一个分支，内部是
+   * restore() + show() + focus()）。
+   *
+   * 为什么需要它：面板点击靠"页面侧轮询 + uiWorkspace.openSession"在 App 窗口内切会话，
+   * 但**切换本身不会把窗口带到前台** —— App 最小化或在后台时，用户看不到切过去的会话。
+   * 所以点击后再补一次 `dsh://open`。非桌面环境（没装 DSH）时 openExternal 会失败，静默即可。
+   */
+  ipcMain.on('pet:focus-app', () => {
+    shell.openExternal('dsh://open').catch((error) => {
+      console.error('[dsh-pet-desktop-helper] focus app failed:', error);
+    });
+  });
+
+  /**
+   * 打开**宠物窗口自己**的开发者工具。
+   *
+   * 为什么需要：DSH 桌面 App 的 F12 / 菜单项只作用于 App 主窗口，宠物窗口是独立进程，
+   * 出了渲染层问题（点击不响应、余额不弹、白屏）时没有可用的观察通道 —— 这段时间排查
+   * 全靠猜。菜单里给一个入口，成本很低。
+   */
+  ipcMain.on('pet:devtools', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return;
+    const contents = win.webContents;
+    if (contents.isDevToolsOpened()) contents.closeDevTools();
+    else contents.openDevTools({ mode: 'detach' });
+  });
+
   // 显示器热更新：分辨率/缩放变化、插拔屏、旋转都会让桌面几何失效。原先几何只在
   // createPetWindows() 算一次并经 URL query 注入，渲染端 VIEW 是模块顶层常量，运行期永不更新——
   // 表现为「改了分辨率后可移动范围还是旧的」。这里重算并推给所有窗口，渲染端就地重挂。

@@ -34,6 +34,18 @@ contextBridge.exposeInMainWorld('petBridge', {
   openDshSite(url) {
     ipcRenderer.send('pet:open-site', { url });
   },
+  /**
+   * 把 DSH 桌面 App 带到前台（最小化则恢复、后台则聚焦）。
+   * 走 `dsh://open` —— App 只处理这一个自定义 URL 分支；主进程侧有专门通道，
+   * 因为 openDshSite 只放行 http(s)。
+   */
+  focusDshApp() {
+    ipcRenderer.send('pet:focus-app');
+  },
+  /** 打开/关闭**本宠物窗口**的开发者工具（主窗口的 F12 不作用于独立宠物窗口） */
+  toggleDevTools() {
+    ipcRenderer.send('pet:devtools');
+  },
   // ---- 宠物间碰撞（跨窗 broker）----
   reportFlight(state) {
     ipcRenderer.send('pet:report-flight', state);

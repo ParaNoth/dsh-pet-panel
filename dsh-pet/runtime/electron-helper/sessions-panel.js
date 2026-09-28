@@ -652,6 +652,19 @@ class SessionsPanel {
       } catch {
         // configUrl 异常时只做跳转请求，不前置浏览器
       }
+    } else {
+      /**
+       * 有页面 → 会话会在 App 窗口内切过去，但**切换本身不会把窗口带到前台**：
+       * App 最小化或在后台时用户看不到结果（实测：前台点击正常，后台/最小化时"没反应"）。
+       * 所以这里补一次 `dsh://open`（App 只处理这一个自定义 URL 分支，内部是
+       * restore() + show() + focus()）。
+       *
+       * 延迟 350ms：先让页面轮询把会话切过去，再抢焦点；否则可能出现"窗口抢到前台时
+       * 会话还没切完"，观感上像闪了一下旧会话。失败静默（非桌面环境没有该 scheme）。
+       */
+      window.setTimeout(() => {
+        if (window.petBridge && window.petBridge.focusDshApp) window.petBridge.focusDshApp();
+      }, 350);
     }
     window.setTimeout(() => row.classList.remove('opening'), 800);
   }

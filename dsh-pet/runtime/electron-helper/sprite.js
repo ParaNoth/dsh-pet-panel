@@ -1041,6 +1041,8 @@ class PetSprite {
       { label: '碎碎念', action: 'whisper' },
       { label: '对话', action: 'chat' },
       { label: '回到初始位置', action: 'home' },
+      // 排障入口：宠物窗口是独立进程，主窗口的 F12 管不到它
+      { label: '开发者工具', action: 'devtools' },
     );
     const tree = tools.concat(S.buildMenuTree(this.animations));
     if (!tree.length) return;
@@ -1086,6 +1088,11 @@ class PetSprite {
     }
     if (leaf.action === 'home') {
       this.goHome(); // 停漫游/移动，清会话位置，回配置角落
+      return;
+    }
+    if (leaf.action === 'devtools') {
+      // 打开本宠物窗口的开发者工具（主窗口 F12 不作用于独立宠物窗口）
+      if (window.petBridge && window.petBridge.toggleDevTools) window.petBridge.toggleDevTools();
       return;
     }
     if (!leaf.anim) return;

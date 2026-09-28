@@ -539,3 +539,29 @@ function helperEnv(extra) {
 打开会话: ✅ session-abc
 已 ack: ✅ nonce-1
 ```
+
+### 坑 6：切了会话但窗口还在后台（点击"像没反应"）
+
+**症状**：App 在前台时点面板某一行 → 正常切到该会话；但 App **最小化或在后台**时点击，
+会话其实也切了，只是**没有把窗口带到前台** —— 观感上就是"点了没反应"。
+
+**根因**：`uiWorkspace.openSession(id)` 只负责"选中会话并展示对话"，**不管窗口是否在前台**。
+最小化/后台时用户看不到结果。
+
+**修法**：点击后补一次 `dsh://open`。DSH 桌面 App 注册的 `dsh://` 里**只处理 `dsh://open`**
+（`app.on("open-url")` 里唯一分支），其内部正是 `window.restore(); window.show(); window.focus();` ——
+恰好就是"恢复最小化 + 聚焦"。
+
+新增 IPC `pet:focus-app`（**没有**放宽既有的 `pet:open-site`，那个只放行 http(s)，
+有意避免宠物窗口成为任意 URL 的执行入口）。
+
+时序：**延迟 350ms 再抢焦点** —— 先让页面轮询把会话切过去，否则可能出现"窗口抢到前台时会话
+还没切完"，观感上像闪了一下旧会话。
+
+### 便利改动：宠物窗口的开发者工具入口
+
+DSH 桌面 App 的 **F12 / 菜单项只作用于 App 主窗口**（`window.webContents`），宠物窗口是独立
+浏览器进程，出问题时没有任何观察通道 —— 这段时间排查点击/余额问题基本靠猜。
+
+在宠物右键菜单加一项「**开发者工具**」（`pet:devtools` → `BrowserWindow.fromWebContents(sender)`），
+打开的就是该宠物窗口自己的 DevTools。
