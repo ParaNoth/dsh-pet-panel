@@ -565,3 +565,47 @@ DSH 桌面 App 的 **F12 / 菜单项只作用于 App 主窗口**（`window.webCo
 
 在宠物右键菜单加一项「**开发者工具**」（`pet:devtools` → `BrowserWindow.fromWebContents(sender)`），
 打开的就是该宠物窗口自己的 DevTools。
+
+### 坑 7：升级 App 到 0.2.x 后整个插件被**静默跳过**（桌宠消失）
+
+**症状**：DSH 桌面版从 0.1.7-rc.2 升到 **0.2.0-rc.1** 后，桌宠窗口不再出现；
+但 profile 配置、安装目录、文件内容全部正常。
+
+**根因**：新版 App 的 profile 加载会对每个 bundle 做**兼容性体检**
+（`dsh-app-boot` 的 `evaluatePluginCompatibility`）：把插件 `package.json` 里所有
+`@deepseek-ai/dsh` / `@deepseek-ai/dsh-*` 的 `peerDependencies` 范围拿去和**运行时版本**比对，
+不满足就**跳过该 bundle**，只往 stderr 写一行（App 里根本看不到）：
+
+```
+dsh: skipping profile bundle "dsh-pet": { incompatible peers … runtimeVersion: 0.2.0-rc.1 }
+```
+
+本插件的 peer 原本是 `^0.1.1-rc.2`，**不满足 0.2.x** —— 于是整个插件（宿主半侧 + 客户端半侧）
+被跳过：`/dsh-pet-7340/*` 全部 404、宿主插槽树里查不到 `dsh-pet`、helper 自然也不会被拉起。
+
+**修法**：把 9 个 `@deepseek-ai/dsh*` peer 统一收紧到 **`^0.2.0-rc.1`**。
+
+**为什么是收紧而不是放宽**：check 的语义是"**这个区间是否接受当前运行时版本**"。本仓库的
+使用形态是「桌面版为主」，而桌面 App 与 CLI 都会拉最新版（两者版本一致），所以只要声明
+当前这一代即可 —— 范围越宽，越容易把"没测过的版本"也宣称成兼容，而跨次版本是真的会断 API
+（坑 4 的 `sessions.open()` 被删、坑 2 的 `settingsScope` 消失都是实例）。
+
+**`^0.2.0-rc.1` 的实际接受集**（实测，注意 semver 预发布规则）：
+
+| 运行时版本 | 是否通过 |
+|---|---|
+| `0.2.0-rc.1` / `0.2.0-rc.2` / `0.2.0` / `0.2.1` | ✅ |
+| `0.3.0-rc.1` / `0.3.0` | ❌ ← 大版本自动拦下，提醒重新测 |
+| `0.2.5-rc.1` | ❌（semver 预发布边界，可接受） |
+
+> 曾一度写成 `>=0.1.1-rc.2 <0.3.0-0`（为兼容当时的 0.1.5-rc.3 CLI）。确认不再用旧 CLI 后
+> 收紧为 `^0.2.0-rc.1`。两者对 0.2.x / 0.3.x 的判定**完全一致**，差别只在下界是否还接 0.1.x。
+
+验证（用 App 自己的 `evaluatePluginCompatibility`）：
+
+```
+0.2.0-rc.1: ✅ 通过    0.1.7-rc.2: ❌ 被拒（符合预期）  0.1.5-rc.3: ❌ 被拒（符合预期）
+```
+
+> 排查提示：`dsh-pet` 在某个新版本 DSH 上"凭空消失"且没有任何报错时，**先查 peer 范围**。
+> 也可以把 `dsh-desktop-host` 的 stderr 接出来看 `skipping profile bundle` 那行。
