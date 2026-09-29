@@ -609,3 +609,53 @@ dsh: skipping profile bundle "dsh-pet": { incompatible peers … runtimeVersion:
 
 > 排查提示：`dsh-pet` 在某个新版本 DSH 上"凭空消失"且没有任何报错时，**先查 peer 范围**。
 > 也可以把 `dsh-desktop-host` 的 stderr 接出来看 `skipping profile bundle` 那行。
+
+---
+
+## 升级 DSH 时的检查清单
+
+每轮 DSH 大版本更新后，**dsh-pet 最可能以"静默消失"的方式坏掉**（没有报错、App 内部看不到）。
+按下面顺序查，每一步都能用命令或 read-only Inspect 验证，不需要猜：
+
+### 1. 先确认插件到底加载了没有
+
+```sh
+# 插件路由还在吗？404 = 宿主半侧根本没加载
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:<port>/dsh-pet-7340/config
+
+# helper 起来了吗？
+pgrep -f "electron-helper/main" | wc -l
+```
+
+也可以查宿主的 loader 目录（read-only Inspect）：`listConfigs({ name: "dsh-pet" })`，
+返回 `entries: []` 就说明 bundle 层压根没被应用。
+
+### 2. 最常见的原因：`peerDependencies` 版本检查（坑 7）
+
+DSH 0.2.0 起，profile 加载会对每个 bundle 做兼容性体检：
+插件的 `@deepseek-ai/dsh*` peer 范围必须**接受当前运行时版本**，否则跳过整个 bundle
+（只写 stderr，App 里不可见）。
+
+**所以每次 DSH 大版本升级的第一件事：把 9 个 `@deepseek-ai/dsh*` peer 收到当前代**
+（例如 `^0.2.0-rc.1`）。验证可以直接用 App 自带的函数：
+
+```js
+import { evaluatePluginCompatibility } from '<app>/dsh/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js';
+evaluatePluginCompatibility(manifest, {}, '0.2.0-rc.1')   // undefined = 通过
+```
+
+### 3. 再看那几个"只在桌面版暴露"的差异点
+
+| 差异 | 检查方式 |
+|---|---|
+| 宿主 node 启用**强化运行时** → 未签名原生库被拒 | 顶层不得静态 import `@electron/get` / `extract-zip`（坑 1） |
+| 那代 `ui-settings` 可能**没有 `settingsScope`** | 不得把它写进 `inject`（坑 2） |
+| 宿主注入 **`ELECTRON_RUN_AS_NODE=1`** | spawn helper 必须用 `helperEnv()` 剔除（坑 3） |
+| 会话打开 API 可能换代 | `uiWorkspace.openSession` 优先、`sessions.open` 回退（坑 4） |
+| App 的 `dsh://` 只有 `dsh://open` | 会话跳转走面板轮询通道，不依赖深链（坑 5） |
+
+### 4. 最后确认版本相关的东西
+
+桌面 profile 是 `pnpm add file:` 装的，**改依赖（package.json）后要重新安装**；
+只改代码是硬链接、直接生效（但用编辑工具改写会断链，需要 `cp`）。
+profile 由 App 独占管理，外部 `dsh plugin --profile desktop` 会被拒绝。
