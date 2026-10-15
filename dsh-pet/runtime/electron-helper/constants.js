@@ -149,6 +149,17 @@ applyDeskGeometry({
   primaryIndex: Number(params.get('primaryIndex') || 0),
 });
 const ORIGIN = new URL(CONFIG.configUrl).origin;
+/**
+ * DSH 页面的**已认证地址**，由 renderer 从宿主 /config 的 `appUrl` 填入（见 renderer.loadConfig）。
+ *
+ * 为什么不能用 ORIGIN：DSH 桌面版对页面有 token 闸门，裸 `http://127.0.0.1:<port>/` 会被拒绝并提示
+ * "dsh web authentication required; reopen the URL printed by dsh web."。带 token 的地址只有宿主知道
+ * （`ctx.connection.authenticatedUrl()`），所以由宿主随 /config 下发。
+ * CLI 场景通常没有 token，宿主会回裸地址，行为与以前一致。
+ */
+window.__dshPetAppUrl = '';
+/** 是否 DSH 桌面 App（由 renderer 从宿主 /config 的 isDesktopApp 填入） */
+window.__dshPetIsDesktopApp = false;
 /** 宿主 /dsh-pet-7340 前缀：bridge 走自定义 scheme（主进程转发），否则 HTTP 直连宿主 */
 const BASE = BRIDGE ? 'dsh-pet-bridge://dsh-pet/dsh-pet-7340' : ORIGIN + '/dsh-pet-7340';
 const BALANCE_URL = BASE + '/balance';

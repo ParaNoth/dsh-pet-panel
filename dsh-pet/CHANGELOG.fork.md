@@ -659,3 +659,35 @@ evaluatePluginCompatibility(manifest, {}, '0.2.0-rc.1')   // undefined = 通过
 桌面 profile 是 `pnpm add file:` 装的，**改依赖（package.json）后要重新安装**；
 只改代码是硬链接、直接生效（但用编辑工具改写会断链，需要 `cp`）。
 profile 由 App 独占管理，外部 `dsh plugin --profile desktop` 会被拒绝。
+
+### 坑 8：桌面版点面板偶发"打开一个报认证错误的 URL"
+
+**症状**：多数时候点击能在 App 内切会话，但**有时**会打开系统浏览器，页面显示：
+
+```
+dsh web authentication required; reopen the URL printed by dsh web.
+```
+
+**根因（两个叠加）**：
+
+1. **判定"有没有页面"会误报**。面板点击后由页面侧轮询领取，而宿主用
+   `hasPage = 最近 5 秒内有页面轮询过` 来判断"页面在不在"。**窗口隐藏/最小化时浏览器渲染进程
+   会被节流/暂停**，轮询停了 → `hasPage` 变 false → 面板走"兜底打开页面"分支 → 开浏览器。
+2. **兜底用的是裸地址**。桌面版对页面有 **token 闸门**，`http://127.0.0.1:<port>/?session=…`
+   必然被拒 —— 于是浏览器里看到那条认证错误。带 token 的地址只有宿主知道
+   （`ctx.connection.authenticatedUrl()`）。
+
+**修法（两条一起）**：
+
+- 宿主随 `/config` 下发两个字段：
+  * `appUrl` —— 经 `ctx.connection.authenticatedUrl()` 处理的**已认证**页面地址；
+  * `isDesktopApp` —— 判据是 `NODE_CHANNEL_FD`（父进程用 `stdio: [...,'ipc']` 拉起子进程时
+    Node/Electron 注入；DSH 桌面 App 正是这样拉起 `dsh-desktop-host` 的，CLI 没有）。
+- 面板据此分支：
+  * **桌面 App**：无页面时**只聚焦窗口**（`dsh://open`），**绝不开浏览器** —— 待打开的会话留在
+    宿主里，窗口回到前台后渲染进程不再被节流，轮询恢复即自动领取切换；
+  * **CLI**：无页面时用**已认证地址**打开并直达该会话。
+- 顺带修掉菜单「打开网站」同样拼裸 `ORIGIN` 的问题（桌面版下点它也会撞 token 闸门）。
+
+**教训**：任何"把用户送到 DSH 页面"的地方都必须用宿主下发的已认证地址，
+**不要在渲染端自己拼 origin** —— 桌面版的 token 闸门会让裸地址必然失败。

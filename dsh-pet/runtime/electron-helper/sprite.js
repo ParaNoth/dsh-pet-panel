@@ -1071,7 +1071,10 @@ class PetSprite {
     this.closeMenu();
     if (!leaf || typeof leaf !== 'object') return;
     if (leaf.action === 'open-site') {
-      if (window.petBridge) window.petBridge.openDshSite(ORIGIN); // 系统默认浏览器打开（等效 Ctrl+点击链接）
+      // 用宿主下发的**已认证地址**（桌面版带 token）；裸 ORIGIN 在桌面版会被 token 闸门拒绝
+      // （"dsh web authentication required"）。取不到才退回 ORIGIN。
+      const target = window.__dshPetAppUrl || ORIGIN;
+      if (window.petBridge) window.petBridge.openDshSite(target);
       return;
     }
     if (leaf.action === 'show-balance') {

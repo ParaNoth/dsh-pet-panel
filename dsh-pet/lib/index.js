@@ -1530,6 +1530,36 @@ function apply(ctx) {
 			return null;
 		}
 	};
+	/**
+	 * 当前 DSH 页面的**已认证**地址（宿主端口 + token），失败退回裸地址。
+	 *
+	 * 为什么需要：桌面版对页面有 token 闸门，直接 `http://127.0.0.1:<port>/` 会得到
+	 * "dsh web authentication required; reopen the URL printed by dsh web." ——
+	 * 面板兜底跳转和菜单「打开网站」都必须用这个带 token 的地址。
+	 * CLI（`dsh web`）场景没有 token，authenticatedUrl 通常是恒等变换，行为不变。
+	 */
+	/**
+	 * 是否运行在 **DSH 桌面 App** 内。
+	 *
+	 * 判据：`NODE_CHANNEL_FD` / `NODE_CHANNEL_SERIALIZATION_MODE` —— 这是父进程用
+	 * `stdio: [..., 'ipc']` 拉起子进程时 Node/Electron 自动注入的（DSH 桌面 App 正是这样拉起
+	 * `dsh-desktop-host` 的）；CLI（`dsh web`）没有这两个变量。
+	 *
+	 * 为什么要区分：没有页面轮询时，桌面版应当**把 App 窗口带到前台**，而不是去开浏览器 ——
+	 * 后者既跳出 App，又会撞上桌面版的 token 闸门（"dsh web authentication required"）。
+	 */
+	const isDesktopApp = Boolean(process.env.NODE_CHANNEL_FD);
+	const authenticatedAppUrl = () => {
+		const port = typeof ctx.webServer?.port === "number" ? ctx.webServer.port : 0;
+		if (!port || port <= 0) return null;
+		const base = `http://127.0.0.1:${port}/`;
+		try {
+			const url = ctx.connection?.authenticatedUrl?.(base);
+			return typeof url === "string" && url.length > 0 ? url : base;
+		} catch {
+			return base;
+		}
+	};
 	const sessionListPayload = () => {
 		const rows = [];
 		// 状态→档位索引（与 shared/work-status.ts 的 WORK_STATUS_STATES 严格同序，只可追加）
@@ -1908,7 +1938,16 @@ function apply(ctx) {
 				return {
 					kind: "json",
 					status: 200,
-					obj: readAllConfig(configPaths, petPanelValue())
+					// appUrl：面板/菜单"打开网站"必须用**已认证**的地址。
+					// DSH 桌面版对页面做了 token 闸门（裸 URL 会回
+					// "dsh web authentication required"），而带 token 的地址只有宿主知道 ——
+					// ctx.connection.authenticatedUrl() 正是 App 给窗口用的那一个。
+					obj: {
+						...readAllConfig(configPaths, petPanelValue()),
+						appUrl: authenticatedAppUrl(),
+						// 面板据此决定无页面时的动作：桌面版聚焦窗口，CLI 才开浏览器
+						isDesktopApp
+					}
 				};
 			} catch (e) {
 				return {

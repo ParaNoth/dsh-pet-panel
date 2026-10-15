@@ -49,6 +49,12 @@ async function loadConfig() {
   const res = await fetch(BASE + '/config', { cache: 'no-store' });
   if (!res.ok) throw new Error(`config http ${res.status}`);
   const merged = await res.json();
+  // 宿主下发的已认证页面地址（桌面版带 token；CLI 通常就是裸地址）——供"打开网站/兜底跳转"使用
+  if (merged && typeof merged.appUrl === 'string' && merged.appUrl.length > 0) {
+    window.__dshPetAppUrl = merged.appUrl;
+  }
+  // 是否 DSH 桌面 App：决定"没有页面在轮询时"是聚焦窗口还是打开浏览器（见 sessions-panel）
+  window.__dshPetIsDesktopApp = Boolean(merged && merged.isDesktopApp);
   return {
     pets: S.flattenConfigPets(merged),
     // 主条目周期（余额轮询等全局节奏；合并器已填内置默认）

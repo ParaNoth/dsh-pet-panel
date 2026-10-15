@@ -644,13 +644,28 @@ class SessionsPanel {
       // 宿主不可达：忽略（不打断宠物本体）
     }
     if (!hasPage) {
-      // 没有已连接的页面：用深链把 DSH 页面打开并直达该会话
-      try {
-        const origin = new URL(CONFIG.configUrl).origin;
-        const url = origin + '/?session=' + encodeURIComponent(id);
-        if (window.petBridge && window.petBridge.openDshSite) window.petBridge.openDshSite(url);
-      } catch {
-        // configUrl 异常时只做跳转请求，不前置浏览器
+      /**
+       * 没有页面在轮询 —— 分两种环境处理，**不能一律开浏览器**：
+       *
+       * * **桌面 App**（`window.__dshPetIsDesktopApp`）：App 明明就在那儿，开浏览器只会跳出 App，
+       *   而且裸地址还会撞上 token 闸门（"dsh web authentication required; reopen the URL printed
+       *   by dsh web."）。所以这里只做一件事：**把 App 窗口带到前台**；待打开的会话仍留在宿主里，
+       *   页面恢复轮询（窗口回到前台时渲染进程不再被节流）自然会领取并切换。
+       *
+       * * **CLI（`dsh web`）**：确实没有页面，用**已认证地址**（宿主下发的 `appUrl`）打开并直达该会话。
+       *   裸 origin 在 CLI 上通常也能用，但用 appUrl 更稳（CLI 也可能启用 token）。
+       */
+      if (window.__dshPetIsDesktopApp) {
+        if (window.petBridge && window.petBridge.focusDshApp) window.petBridge.focusDshApp();
+      } else {
+        try {
+          const base = window.__dshPetAppUrl || new URL(CONFIG.configUrl).origin + '/';
+          const url = new URL(base);
+          url.searchParams.set('session', id);
+          if (window.petBridge && window.petBridge.openDshSite) window.petBridge.openDshSite(url.toString());
+        } catch {
+          // configUrl 异常时只做跳转请求，不前置浏览器
+        }
       }
     } else {
       /**
