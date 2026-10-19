@@ -237,6 +237,32 @@ class SessionsPanel {
 
     void this.refresh();
     void this.refreshBalance();
+    // 排障快照：宠物 DevTools 里执行 __dshPetDebug.snapshot() 即可拿到定位所需全部量
+    window.__dshPetDebug = window.__dshPetDebug || {};
+    window.__dshPetDebug.snapshot = () => {
+      const sp = window.__dshPetSprite;
+      const pos = sp && sp.pos ? { x: sp.pos.x, y: sp.pos.y } : null;
+      const size = sp ? Number(sp.size) || 0 : 0;
+      let areaIndex = -1;
+      if (pos && AREAS && AREAS.length) {
+        const cx = pos.x + size / 2;
+        const cy = pos.y + size / 2;
+        areaIndex = AREAS.findIndex(
+          (a) => cx >= a.x && cx <= a.x + rectSize(a) && cy >= a.y && cy <= a.y + rectSize(a, 'h'),
+        );
+      }
+      return {
+        pos,
+        center: pos ? { x: pos.x + size / 2, y: pos.y + size / 2 } : null,
+        size,
+        areaIndex,
+        areas: AREAS,
+        view: { x: VIEW.x, y: VIEW.y, w: VIEW.w, h: VIEW.h },
+        panelLeft: this._appliedLeft,
+        lastDragRaw: window.__dshPetDebug.lastDragRaw,
+        scale: CONFIG.scale,
+      };
+    };
     this.timer = window.setInterval(() => void this.refresh(), SESSIONS_POLL_MS);
     this.balanceTimer = window.setInterval(() => void this.refreshBalance(), BALANCE_POLL_MS);
     return this;
@@ -378,7 +404,8 @@ class SessionsPanel {
       this._geoKey = waKey;
       this._area = null;
       this._appliedLeft = undefined;
-      this._lastPet = undefined;
+      this._pendingLeft = undefined;
+      this._pendingSince = undefined;
     }
     const size = Number(sprite.size) || 0;
     if (size <= 0) return;
@@ -425,17 +452,23 @@ class SessionsPanel {
     // 规则：本次目标与上次已应用值相差 > JUMP 时，只有宠物**累计移动**超过 MOVE 才接受新的位置；
     // 否则保持不动。真走路跨屏时位移会持续累积，很快越过 MOVE，不会卡住。
     const wantedLeft = Math.round(screenL - winLocalL);
-    const PET_MOVE_EPS = 12;
     const PANEL_JUMP_EPS = 24;
-    const petMoved = this._lastPet === undefined
-      ? Infinity
-      : Math.abs(sprite.pos.x - this._lastPet.x) + Math.abs(sprite.pos.y - this._lastPet.y);
-    const willJump = this._appliedLeft !== undefined && Math.abs(wantedLeft - this._appliedLeft) > PANEL_JUMP_EPS;
-    if (!(willJump && petMoved < PET_MOVE_EPS)) {
-      this.el.style.setProperty('--sess-panel-left', wantedLeft + 'px');
-      this._appliedLeft = wantedLeft;
-      this._lastPet = { x: sprite.pos.x, y: sprite.pos.y };
+    const PANEL_SETTLE_MS = 150;
+    const nowMs = performance.now();
+    if (this._appliedLeft !== undefined && Math.abs(wantedLeft - this._appliedLeft) > PANEL_JUMP_EPS) {
+      // 大幅跳变：同一目标必须连续稳定 PANEL_SETTLE_MS 才应用。
+      // 真正跨屏走路时宠物会在新位置稳定下来，150ms 内自然被接受（不卡死）；
+      // 而在接缝/空洞边缘来回抖时目标每帧都变，永远等不到稳定 —— 面板纹丝不动。
+      if (this._pendingLeft !== wantedLeft) {
+        this._pendingLeft = wantedLeft;
+        this._pendingSince = nowMs;
+        return;
+      }
+      if (nowMs - (this._pendingSince || 0) < PANEL_SETTLE_MS) return;
     }
+    this._pendingLeft = undefined;
+    this.el.style.setProperty('--sess-panel-left', wantedLeft + 'px');
+    this._appliedLeft = wantedLeft;
     // ---- 几何自检（有意保留，不是调试残留）----
     // 渲染端没有任何日志通道（主进程写文件在这台机器上静默失败、devtools 也不在跟前），
     // 所以把「边界算坏了」这件事**画在标题栏上**：健康时留空、完全不占地方，
