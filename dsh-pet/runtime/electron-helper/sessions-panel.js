@@ -467,30 +467,16 @@ class SessionsPanel {
     //
     // ⚠️ 字段名陷阱：AREAS 的元素是 {x, y, width, height}（shared-core 的 translateRects 生成），
     // 而 VIEW 用的是 {x, y, w, h} —— 读宽高一律走 rectSize() 兼容两种命名。
-    // 允许范围 = **整个桌面所有屏的并集外包**（连续、无跳变）。
-    // 不用"与窗口相交的屏"：窗口宽 360，宠物靠近主屏右侧时窗口会开始压到第二屏，
-    // 相交集合一变，夹取基准就跳一次 → 表现为"偏左 / 居中 / 偏右"的锯齿。
-    // 并集外包是连续量，面板在桌面内部永远居中；只有贴到桌面最外侧才收边。
-    let boundL = Infinity;
-    let boundR = -Infinity;
-    let boundT = Infinity;
-    let boundB = -Infinity;
-    for (const a of AREAS) {
-      const aw = rectSize(a);
-      const ah = rectSize(a, 'h');
-      boundL = Math.min(boundL, a.x);
-      boundR = Math.max(boundR, a.x + aw);
-      boundT = Math.min(boundT, a.y);
-      boundB = Math.max(boundB, a.y + ah);
-    }
-    if (!Number.isFinite(boundL)) {
-      const wa2 = this.desktopRect(sprite);
-      boundL = wa2.x;
-      boundR = wa2.x + rectSize(wa2);
-      boundT = wa2.y;
-      boundB = wa2.y + rectSize(wa2, 'h');
-    }
-    const waRight = boundR; // 供下方几何自检使用
+    // 允许范围 = **宠物所在那块屏**的工作区。
+    // 为什么不用"整个桌面并集"：宠物贴到屏幕边缘时，面板必须被收回到**这块屏可见范围**内
+    //（否则会跨到相邻屏或空洞上，观感就是"越界了"）。跨屏居中由"宠物在哪块屏"自然切换，
+    // 配合下方的稳定判定（150ms + 定时器兜底）不会闪。
+    const wa = this.desktopRect(sprite);
+    const waRight = wa.x + rectSize(wa, 'w');
+    const boundL = wa.x;
+    const boundR = waRight;
+    const boundT = wa.y;
+    const boundB = wa.y + rectSize(wa, 'h');
 
     // 宠物**视觉中心**：包围盒中心（命中框中心即包围盒中心），面板以它为基准才对齐身体
     const bodyCx = sprite.pos.x + size / 2;

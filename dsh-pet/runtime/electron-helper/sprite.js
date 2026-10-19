@@ -801,7 +801,8 @@ class PetSprite {
       }
     }
     this.stopThrow(); // 空中抓取：从当前落点开始新拖拽（this.pos 实时）
-    this._cursorBias = null; // 每次拖拽重新校准兜底驱动的偏差
+    // 刚按下不算"指针停滞"：重置时间戳，避免第一帧光标采样就接管（接管过早会跳一下）
+    this._lastPtrMoveAt = performance.now();
     this.stopDragFollow();
     this.stopMove();
     this.dragTrail = [];
@@ -878,13 +879,11 @@ class PetSprite {
     const cy = toLocal(p.y);
     // 首次接管时做一次常数偏差校准：系统光标与 pointer 的 screenX/Y 若存在单位/原点差异，
     // 这里把它吸收掉，避免接管瞬间跳一下。
-    if (!this._cursorBias) {
-      const ref = this._lastPtrCss || { x: d.sx, y: d.sy };
-      this._cursorBias = { x: cx - ref.x, y: cy - ref.y };
-      this._cursorBiasAt = { x: ref.x, y: ref.y };
-    }
-    const px = cx - this._cursorBias.x;
-    const py = cy - this._cursorBias.y;
+    // 偏差恒为 0：系统光标与 pointer 的 screenX/Y 同为 DIP，单位一致。
+    // （曾经用"上一次指针位置"当参考来算偏差 —— 那是错的：它把**移动量**也算进了偏差，
+    //   于是 pets 被固定在旧位置、拖拽时明显"跟手偏移/滑开"，跨屏时偏移更大。）
+    const px = cx;
+    const py = cy;
     const dx = px - d.sx;
     const dy = py - d.sy;
     if (!d.dragging) {
