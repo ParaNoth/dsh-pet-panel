@@ -1043,6 +1043,8 @@ class PetSprite {
       { label: '回到初始位置', action: 'home' },
       // 排障入口：宠物窗口是独立进程，主窗口的 F12 管不到它
       { label: '开发者工具', action: 'devtools' },
+      // 排障：一键把定位信息复制到剪贴板（DSH 客户端里没有控制台入口，这是最省事的取证方式）
+      { label: '复制定位信息', action: 'copy-diag' },
     );
     const tree = tools.concat(S.buildMenuTree(this.animations));
     if (!tree.length) return;
@@ -1096,6 +1098,43 @@ class PetSprite {
     if (leaf.action === 'devtools') {
       // 打开本宠物窗口的开发者工具（主窗口 F12 不作用于独立宠物窗口）
       if (window.petBridge && window.petBridge.toggleDevTools) window.petBridge.toggleDevTools();
+      return;
+    }
+    if (leaf.action === 'copy-diag') {
+      // 定位信息快照：把「助手认为的屏幕布局 + 宠物实际位置 + 面板左缘」写进剪贴板。
+      // 用户不需要打开任何控制台 —— 右键菜单点一下，粘贴即可。
+      try {
+        const size = Number(this.size) || 0;
+        const cx = this.pos.x + size / 2;
+        const cy = this.pos.y + size / 2;
+        const rectW = (r) => (r && (r.width ?? r.w)) || 0;
+        const rectH = (r) => (r && (r.height ?? r.h)) || 0;
+        let areaIndex = -1;
+        if (AREAS && AREAS.length) {
+          areaIndex = AREAS.findIndex(
+            (a) => cx >= a.x && cx <= a.x + rectW(a) && cy >= a.y && cy <= a.y + rectH(a),
+          );
+        }
+        const panel = window.__dshSessionPanel;
+        const info = {
+          at: new Date().toISOString(),
+          pos: { x: this.pos.x, y: this.pos.y },
+          center: { x: cx, y: cy },
+          size,
+          areaIndex,
+          areas: AREAS,
+          view: { x: VIEW.x, y: VIEW.y, w: VIEW.w, h: VIEW.h },
+          scale: CONFIG.scale,
+          geo: window.__dshPetGeo || null,
+          panelLeft: panel ? panel._appliedLeft : null,
+          lastDragRaw: window.__dshPetDebug ? window.__dshPetDebug.lastDragRaw : null,
+        };
+        if (window.petBridge && window.petBridge.copyText) {
+          window.petBridge.copyText(JSON.stringify(info, null, 1));
+        }
+      } catch (error) {
+        console.error('[dsh-pet] copy-diag failed:', error);
+      }
       return;
     }
     if (!leaf.anim) return;

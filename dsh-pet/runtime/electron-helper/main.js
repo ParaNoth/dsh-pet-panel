@@ -754,6 +754,17 @@ app.whenReady().then(() => {
    * 出了渲染层问题（点击不响应、余额不弹、白屏）时没有可用的观察通道 —— 这段时间排查
    * 全靠猜。菜单里给一个入口，成本很低。
    */
+  /** 排障：把文本写进剪贴板（菜单「复制定位信息」用，用户无需打开控制台） */
+  ipcMain.on('pet:copy-text', (event, payload) => {
+    const text = payload && typeof payload === 'object' ? String(payload.text || '') : '';
+    if (!text) return;
+    try {
+      require('electron').clipboard.writeText(text);
+    } catch (error) {
+      console.error('[dsh-pet-desktop-helper] clipboard write failed:', error);
+    }
+  });
+
   ipcMain.on('pet:devtools', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return;

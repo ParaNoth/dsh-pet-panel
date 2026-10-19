@@ -91,6 +91,8 @@ let PRIMARY_AREA = null;
 
 /** 把主进程给的桌面几何（{hull, areas, panels, primaryIndex}，屏幕坐标）挂到 VIEW / AREAS / PANELS */
 function applyDeskGeometry(geo) {
+  // 排障留档：主进程下发的原始几何（物理像素），菜单「复制定位信息」会带上它
+  window.__dshPetGeo = geo;
   const hull = geo && geo.hull;
   const list = geo && Array.isArray(geo.areas) ? geo.areas.filter((a) => a && a.width > 0 && a.height > 0) : [];
   if (!hull || !(hull.width > 0) || !(hull.height > 0) || list.length === 0) return false;

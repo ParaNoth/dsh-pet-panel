@@ -46,6 +46,10 @@ contextBridge.exposeInMainWorld('petBridge', {
   toggleDevTools() {
     ipcRenderer.send('pet:devtools');
   },
+  /** 把一段文本写进系统剪贴板（排障用：一键复制定位信息，不需要开控制台） */
+  copyText(text) {
+    ipcRenderer.send('pet:copy-text', { text: String(text) });
+  },
   // ---- 宠物间碰撞（跨窗 broker）----
   reportFlight(state) {
     ipcRenderer.send('pet:report-flight', state);

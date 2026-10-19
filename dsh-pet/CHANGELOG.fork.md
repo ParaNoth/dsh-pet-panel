@@ -767,3 +767,20 @@ CLI（普通 node，无 token）:
 
 > 教训：**用"最近距离"在相邻区域间做选择时，必须加粘滞/迟滞**。两块相邻区域只在边界差一点点，
 > 而下游计算可能把这点差别放大成上百像素的位移 —— 宠物只要在边界上轻微移动就会持续闪烁。
+
+### 排障便利：右键菜单「复制定位信息」
+
+DSH 客户端里用户没有方便的控制台入口（主窗口的 F12 只作用于 App 主窗口，宠物窗口是独立进程）。
+为了在不要求用户开 DevTools 的前提下拿到定位数据，宠物右键菜单加了一项
+**「复制定位信息」**：把下面这份 JSON 写进剪贴板，粘贴给开发者即可。
+
+```json
+{ pos, center, size, areaIndex, areas, view, scale, geo, panelLeft, lastDragRaw }
+```
+
+- `areaIndex` = -1 表示宠物中心落在**空洞**里（不属于任何屏幕可视区）
+- `areas` 是助手认为的逐屏工作区（视口相对）；`geo` 是主进程下发的原始几何（物理像素）
+- `panelLeft` 是面板当前实际左缘，可直接对照"是否居中"
+
+链路：`sprite.js` 菜单 → `petBridge.copyText`（preload）→ 主进程 `pet:copy-text` →
+`clipboard.writeText`。另外 `applyDeskGeometry` 会把原始几何留档到 `window.__dshPetGeo`。
