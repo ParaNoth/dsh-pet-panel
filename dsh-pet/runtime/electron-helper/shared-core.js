@@ -1005,7 +1005,10 @@ const RELEASE_WINDOW_MS = 150;
 const RELEASE_STALE_MS = 150;
 const MIN_SPAN_MS = 20;
 const SEG_MIN_DT_MS = 8;
-const DEAD_ZONE_SPEED = 500;
+// 释放速度低于此值视为"轻放"而不抛掷。原值 500 太敏感：普通拖拽松手的余速常在
+// 800–1500 px/s，会被判成甩掷，宠物飞出近千像素（观感 = "松手就被弹走"）。
+// 可用配置 `physics.releaseSpeed` 覆盖。
+const DEAD_ZONE_SPEED = 1200;
 const MAX_THROW_SPEED = 3600;
 const PEAK_WEIGHT = .5;
 const ACCEL_REF = 8e3;
@@ -1169,7 +1172,7 @@ const estimateReleaseVelocity = (trail, now, physics = DEFAULT_PHYSICS) => {
 	}
 	const speedBeforeClamp = ((1 - PEAK_WEIGHT) * baseSpeed + PEAK_WEIGHT * peakSpeed) * (1 + Math.min(Math.max(accel, 0) / ACCEL_REF, 1) * ACCEL_GAIN_MAX);
 	const speed = softClampSpeed(speedBeforeClamp) * physics.throwPower;
-	if (speed < DEAD_ZONE_SPEED) return null;
+	if (speed < (Number(physics && physics.releaseSpeed) || DEAD_ZONE_SPEED)) return null;
 	return {
 		vx: baseVx / baseSpeed * speed,
 		vy: baseVy / baseSpeed * speed

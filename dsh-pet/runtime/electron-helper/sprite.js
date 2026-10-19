@@ -904,6 +904,7 @@ class PetSprite {
         );
         // 跨屏放置现在由物理统一处理（见 shared-core 的 throwSpace：x 用并集外包、
         // y 按当前屏、中心必须落在某块屏上），不再需要"跨屏就跳过抛掷"的特例。
+        window.__dshPetDebug.lastThrow = { x: px, y: py, vx: Math.round(vel.vx), vy: Math.round(vel.vy) };
         this.startThrow(px, py, vel.vx, vel.vy);
       } else {
         // customPos 语义 = 宠物**中心**比例（position() 用 rx*W - halfW 还原左上角；

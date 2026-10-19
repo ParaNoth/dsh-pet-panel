@@ -259,7 +259,9 @@ class SessionsPanel {
         areas: AREAS,
         view: { x: VIEW.x, y: VIEW.y, w: VIEW.w, h: VIEW.h },
         panelLeft: this._appliedLeft,
+        win: { w: window.innerWidth, h: window.innerHeight },
         lastDragRaw: window.__dshPetDebug.lastDragRaw,
+        lastThrow: window.__dshPetDebug.lastThrow,
         scale: CONFIG.scale,
       };
     };
@@ -478,7 +480,11 @@ class SessionsPanel {
     // 而两块屏的夹取基准差得远（实测 90px 级）——表现就是"面板一直闪"。
     // 规则：本次目标与上次已应用值相差 > JUMP 时，只有宠物**累计移动**超过 MOVE 才接受新的位置；
     // 否则保持不动。真走路跨屏时位移会持续累积，很快越过 MOVE，不会卡住。
-    const wantedLeft = Math.round(screenL - winLocalL);
+    // 硬性兜底：不论上面的边界算出什么，面板**永远留在窗口画布内**。
+    // （跨屏拖动时曾出现"面板被挤出画布"：边界用的是并集，一旦窗口几何与屏幕几何换算有偏差，
+    //   算出的 left 可能超出 [0, winW-面板宽]，溢出部分直接不可见。这一夹取与几何正确性无关。）
+    const maxLeft = Math.max(0, Math.round(winW - PANEL_NATURAL_W));
+    const wantedLeft = Math.min(Math.max(Math.round(screenL - winLocalL), 0), maxLeft);
     const PANEL_JUMP_EPS = 24;
     const PANEL_SETTLE_MS = 150;
     const nowMs = performance.now();
