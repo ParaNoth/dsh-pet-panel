@@ -1242,6 +1242,9 @@ function envPositiveInt(value, fallback) {
 const name = "pet";
 const inject = [
 	"webServer",
+	// connection：/config 的 appUrl 需要 ctx.connection.authenticatedUrl() 给桌面版的页面地址
+	// 加上 token（不加就是裸地址，桌面版的 token 闸门会拒绝）。声明为依赖，确保取得到。
+	"connection",
 	"agentDefaultModel",
 	"credentials",
 	"llm",
@@ -1548,7 +1551,16 @@ function apply(ctx) {
 	 * 为什么要区分：没有页面轮询时，桌面版应当**把 App 窗口带到前台**，而不是去开浏览器 ——
 	 * 后者既跳出 App，又会撞上桌面版的 token 闸门（"dsh web authentication required"）。
 	 */
-	const isDesktopApp = Boolean(process.env.NODE_CHANNEL_FD);
+	const isDesktopApp = Boolean(
+		// 唯一判据：DSH 桌面 App 的宿主跑在 **Electron 的 Node 模式**下，因此
+		// `process.versions.electron` 有值；CLI（`dsh web`，普通 node）没有。
+		//
+		// 不能用 NODE_CHANNEL_FD：Electron/Node 会在运行期把它从 process.env 删掉，
+		// `ps eww` 仍显示 exec 时的初始环境，但插件里读出来是空的（实测踩过：宿主上明明有、
+		// 而 helper 继承的 process.env 里却没有）。
+		// 也不能用 ELECTRON_RUN_AS_NODE：某些 shell 会预置它，CLI 会被误判成桌面版。
+		process.versions?.electron
+	);
 	const authenticatedAppUrl = () => {
 		const port = typeof ctx.webServer?.port === "number" ? ctx.webServer.port : 0;
 		if (!port || port <= 0) return null;

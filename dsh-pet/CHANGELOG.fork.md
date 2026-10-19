@@ -691,3 +691,41 @@ dsh web authentication required; reopen the URL printed by dsh web.
 
 **教训**：任何"把用户送到 DSH 页面"的地方都必须用宿主下发的已认证地址，
 **不要在渲染端自己拼 origin** —— 桌面版的 token 闸门会让裸地址必然失败。
+
+### 坑 9：`NODE_CHANNEL_FD` 判桌面版不可靠；`connection` 没进 inject 导致 appUrl 没 token
+
+**发现时机**：桌面版升到 **0.2.1-rc.2** 后复核坑 8 的两个字段，发现：
+
+```
+/config → appUrl: http://127.0.0.1:60338/     ← 没有 token
+          isDesktopApp: false                  ← 但明明在桌面版里
+```
+
+**两个独立原因**（都是本仓库自己的实现问题，不是 DSH 新版造成的）：
+
+1. **`NODE_CHANNEL_FD` 在运行期读不到**。`ps eww` 能看到它（那是 exec 时的初始环境），
+   但 Electron/Node 会在启动过程中把它从 `process.env` 删掉。
+   **决定性证据**：helper 是用宿主 `process.env` 派生的（`helperEnv()` 只删 `ELECTRON_RUN_AS_NODE`），
+   而 helper 的环境里**没有** `NODE_CHANNEL_FD` —— 说明宿主的 `process.env` 里已经没有它了。
+   → 改用 **`process.versions.electron`**：桌面 App 的宿主跑在 Electron 的 Node 模式下，有值；
+     CLI（普通 node）没有。实测：普通 node → `undefined`，Electron 模式 → `43.3.0`。
+     也**不能**用 `ELECTRON_RUN_AS_NODE` 兜底：某些 shell 会预置它，会把 CLI 误判成桌面版。
+
+2. **`connection` 不在宿主 `inject` 数组里**，`ctx.connection` 取不到 →
+   `authenticatedUrl()` 调用被 try/catch 吞掉 → 退化成裸地址。
+   → 把 `"connection"` 加进 `inject`，`appUrl` 才会带上 `?token=…`。
+
+**验证**（桩测真实路由处理函数）：
+
+```
+桌面版（Electron 模式 + authenticatedUrl 加 token）:
+  appUrl: http://127.0.0.1:60338/?token=TESTTOKEN   含 token ✅   isDesktopApp: true  ✅
+CLI（普通 node，无 token）:
+  appUrl: http://127.0.0.1:60338/                   裸地址 ✅     isDesktopApp: false ✅
+```
+
+**教训**：
+- 判断"跑在哪个壳里"要用**运行时事实**（`process.versions.electron`），
+  不要用 `ps` 能看到的环境变量 —— 它反映的是 exec 时的初始环境，可能已被运行时修改。
+- 访问 Cordis 服务前先确认它在 `inject` 里；否则直接用属性访问会失败，而 `?.` + `try/catch`
+  会让失败**完全静默**（这次的症状就是"看起来拿到了 URL，其实没 token"）。
