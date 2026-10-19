@@ -1171,7 +1171,13 @@ class PetSprite {
           );
         }
         const panel = window.__dshSessionPanel;
+        // 以**面板自己的快照**为底：它带 rev / win / bounds / sideAllow / lastThrow 等字段。
+        //（之前这里另手写了一份 JSON，导致诊断缺字段、被误判成"代码没生效"。）
+        const base = window.__dshPetDebug && typeof window.__dshPetDebug.snapshot === 'function'
+          ? window.__dshPetDebug.snapshot()
+          : {};
         const info = {
+          ...base,
           at: new Date().toISOString(),
           pos: { x: this.pos.x, y: this.pos.y },
           center: { x: cx, y: cy },
@@ -1183,6 +1189,7 @@ class PetSprite {
           geo: window.__dshPetGeo || null,
           panelLeft: panel ? panel._appliedLeft : null,
           lastDragRaw: window.__dshPetDebug ? window.__dshPetDebug.lastDragRaw : null,
+          lastThrow: window.__dshPetDebug ? window.__dshPetDebug.lastThrow : null,
         };
         if (window.petBridge && window.petBridge.copyText) {
           window.petBridge.copyText(JSON.stringify(info, null, 1));

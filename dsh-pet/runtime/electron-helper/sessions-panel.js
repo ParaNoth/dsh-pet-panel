@@ -467,6 +467,10 @@ class SessionsPanel {
     //
     // ⚠️ 字段名陷阱：AREAS 的元素是 {x, y, width, height}（shared-core 的 translateRects 生成），
     // 而 VIEW 用的是 {x, y, w, h} —— 读宽高一律走 rectSize() 兼容两种命名。
+    // 允许范围 = **整个桌面所有屏的并集外包**（连续、无跳变）。
+    // 不用"与窗口相交的屏"：窗口宽 360，宠物靠近主屏右侧时窗口会开始压到第二屏，
+    // 相交集合一变，夹取基准就跳一次 → 表现为"偏左 / 居中 / 偏右"的锯齿。
+    // 并集外包是连续量，面板在桌面内部永远居中；只有贴到桌面最外侧才收边。
     let boundL = Infinity;
     let boundR = -Infinity;
     let boundT = Infinity;
@@ -474,19 +478,17 @@ class SessionsPanel {
     for (const a of AREAS) {
       const aw = rectSize(a);
       const ah = rectSize(a, 'h');
-      if (a.x + aw <= winLocalL || a.x >= winR) continue; // 与窗口无横向交集
       boundL = Math.min(boundL, a.x);
       boundR = Math.max(boundR, a.x + aw);
       boundT = Math.min(boundT, a.y);
       boundB = Math.max(boundB, a.y + ah);
     }
     if (!Number.isFinite(boundL)) {
-      // 极端兜底：窗口不与任何屏相交 → 退回宠物中心那块屏（保持旧行为）
-      const wa = this.desktopRect(sprite);
-      boundL = wa.x;
-      boundR = wa.x + rectSize(wa);
-      boundT = wa.y;
-      boundB = wa.y + rectSize(wa, 'h');
+      const wa2 = this.desktopRect(sprite);
+      boundL = wa2.x;
+      boundR = wa2.x + rectSize(wa2);
+      boundT = wa2.y;
+      boundB = wa2.y + rectSize(wa2, 'h');
     }
     const waRight = boundR; // 供下方几何自检使用
 
