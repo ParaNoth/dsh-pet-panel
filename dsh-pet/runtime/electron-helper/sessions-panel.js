@@ -262,6 +262,18 @@ class SessionsPanel {
         win: { w: window.innerWidth, h: window.innerHeight },
         lastDragRaw: window.__dshPetDebug.lastDragRaw,
         lastThrow: window.__dshPetDebug.lastThrow,
+        // 运行版本身份：新版（并集 x）的 minX = −sideAllow；旧版（逐屏内缩）= 屏左 − sideAllow。
+        // 一眼就能确认"跑的是不是刚部署的那版"（踩过：文件已更新但 helper 没重启）。
+        bounds: (() => {
+          const sp = window.__dshPetSprite;
+          const space = sp && sp.space;
+          if (!space || !Array.isArray(space.bounds)) return null;
+          return space.bounds.map((b) => ({ minX: Math.round(b.minX), maxX: Math.round(b.maxX), minY: Math.round(b.minY), maxY: Math.round(b.maxY) }));
+        })(),
+        sideAllow: (() => {
+          const sp = window.__dshPetSprite;
+          return sp ? sp.sideAllow : null;
+        })(),
         scale: CONFIG.scale,
       };
     };
