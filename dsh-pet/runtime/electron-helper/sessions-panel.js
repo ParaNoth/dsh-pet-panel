@@ -87,6 +87,14 @@ class SessionsPanel {
     this.lastSignature = '';
     this.draggedRecently = false;
     this.timer = null;
+    /** 面板左缘状态（见 reposition）：已应用值 / 挂起目标 / 挂起起始时刻 / 稳定定时器 */
+    this._appliedLeft = undefined;
+    this._pendingLeft = undefined;
+    this._pendingSince = undefined;
+    this._settleTimer = null;
+    this._posKey = null;
+    this._geoKey = null;
+    this._area = null;
     /**
      * 已被用户点 × 关闭的会话：纯**内存**记录，重启即清。
      *
@@ -422,6 +430,10 @@ class SessionsPanel {
       this._appliedLeft = undefined;
       this._pendingLeft = undefined;
       this._pendingSince = undefined;
+      if (this._settleTimer !== null) {
+        window.clearTimeout(this._settleTimer);
+        this._settleTimer = null;
+      }
     }
     const size = Number(sprite.size) || 0;
     if (size <= 0) return;
@@ -489,11 +501,11 @@ class SessionsPanel {
     const screenL = maxScreenL >= minScreenL
       ? Math.min(Math.max(idealLeft, minScreenL), maxScreenL)
       : (idealLeft < minScreenL ? minScreenL : maxScreenL);
-    // ---- 时间迟滞：位置只微小变化时，禁止面板大幅横跳 ----
-    // 宠物在多屏接缝上来回轻微移动（漫游反复试走/物理回弹）时，参考屏会在两块屏之间翻面，
-    // 而两块屏的夹取基准差得远（实测 90px 级）——表现就是"面板一直闪"。
-    // 规则：本次目标与上次已应用值相差 > JUMP 时，只有宠物**累计移动**超过 MOVE 才接受新的位置；
-    // 否则保持不动。真走路跨屏时位移会持续累积，很快越过 MOVE，不会卡住。
+    // ---- 时间迟滞：大幅跳变要"稳定存在"才应用（消除接缝闪烁）----
+    // 宠物在接缝/空洞边缘轻微移动时，夹取基准可能骤变（实测 187px 级），直接应用会两个位置
+    // 疯狂交替（"面板一直闪"）。规则：小幅变化立即应用；大幅跳变需同一目标稳定 150ms，
+    // 且**必须有定时器兜底**——宠物停住后不再有 reposition 调用，只靠"下次调用才应用"会永远卡住
+    //（表现为"明明不在边缘，面板却一直不居中"）。
     // 硬性兜底：不论上面的边界算出什么，面板**永远留在窗口画布内**。
     // （跨屏拖动时曾出现"面板被挤出画布"：边界用的是并集，一旦窗口几何与屏幕几何换算有偏差，
     //   算出的 left 可能超出 [0, winW-面板宽]，溢出部分直接不可见。这一夹取与几何正确性无关。）
@@ -509,13 +521,19 @@ class SessionsPanel {
       if (this._pendingLeft !== wantedLeft) {
         this._pendingLeft = wantedLeft;
         this._pendingSince = nowMs;
+        // ⚠️ 必须用定时器兜底：宠物停住后 sendBounds 不再调用，reposition 也就不会再进来，
+        // 挂起的目标会永远不生效 —— 表现为"明明不在边缘，面板却一直不居中"（卡在旧 left）。
+        if (this._settleTimer !== null) window.clearTimeout(this._settleTimer);
+        this._settleTimer = window.setTimeout(() => {
+          this._settleTimer = null;
+          if (this._pendingLeft !== wantedLeft) return;
+          this.applyPanelLeft(wantedLeft);
+        }, PANEL_SETTLE_MS + 30);
         return;
       }
       if (nowMs - (this._pendingSince || 0) < PANEL_SETTLE_MS) return;
     }
-    this._pendingLeft = undefined;
-    this.el.style.setProperty('--sess-panel-left', wantedLeft + 'px');
-    this._appliedLeft = wantedLeft;
+    this.applyPanelLeft(wantedLeft);
     // ---- 几何自检（有意保留，不是调试残留）----
     // 渲染端没有任何日志通道（主进程写文件在这台机器上静默失败、devtools 也不在跟前），
     // 所以把「边界算坏了」这件事**画在标题栏上**：健康时留空、完全不占地方，
@@ -603,6 +621,17 @@ class SessionsPanel {
         ? '缺少凭证：' + String(data.message || '')
         : '余额获取失败：' + String(data.message || data.reason || '未知原因');
     return reason;
+  }
+
+  /** 应用面板左缘（唯一出口：赋值 + 记录 + 清挂起/定时器） */
+  applyPanelLeft(left) {
+    if (this._settleTimer !== null) {
+      window.clearTimeout(this._settleTimer);
+      this._settleTimer = null;
+    }
+    this._pendingLeft = undefined;
+    this.el.style.setProperty('--sess-panel-left', left + 'px');
+    this._appliedLeft = left;
   }
 
   /** 计算"当前该显示的行 + 其签名"（过滤已关闭的会话；签名含 workText 与关闭状态） */
