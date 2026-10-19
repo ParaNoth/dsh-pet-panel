@@ -596,6 +596,12 @@ async function handleBridgeRequest(request) {
 }
 
 app.whenReady().then(() => {
+  // 渲染端脚本（index.html 里的 *.js）走 file://，曾出现"文件已更新但页面仍用旧脚本"，
+  // 排查时表现为快照缺字段、行为像上一版。启动时清一次缓存，保证加载磁盘上的当前版本。
+  try {
+    require('electron').session.defaultSession.clearCache().catch(() => {});
+  } catch {}
+
   // 探测子进程：此时没有 force-device-scale-factor，读到的是 Windows 的真实主屏缩放。
   // 退出推迟一拍——在 ready 回调里直接 app.exit() 会赶在 stdout 落盘前拆掉进程
   if (DPI_PROBE) {
@@ -765,6 +771,38 @@ app.whenReady().then(() => {
       require('electron').clipboard.writeText(text);
     } catch (error) {
       console.error('[dsh-pet-desktop-helper] clipboard write failed:', error);
+    }
+  });
+
+  /**
+   * 拖拽期间由主进程按帧喂**系统光标位置**。
+   *
+   * 为什么必须这样：渲染端的拖拽靠 `pointermove`，而它绑在宠物**命中区**（一个很小的矩形）上；
+   * 拖拽时窗口由我们自己 `setBounds` 逐帧移动，指针很容易跑出命中区 → 事件停止 → 拖拽定格。
+   * 实测两次都是"只走了指针位移的约 1/3 就停住"（petX 552，指针 +894 DIP，应到 999，实际 680）。
+   * 系统光标位置与窗口/命中区无关，跨屏、跨 DPI 都成立，用它驱动才可靠。
+   */
+  const dragWindows = new Set();
+  let cursorFeed = null;
+  const startCursorFeed = () => {
+    if (cursorFeed !== null) return;
+    cursorFeed = setInterval(() => {
+      if (dragWindows.size === 0) return;
+      const p = screen.getCursorScreenPoint();
+      for (const win of dragWindows) {
+        if (!win.isDestroyed()) win.webContents.send('pet:cursor', { x: p.x, y: p.y });
+      }
+    }, 16);
+    cursorFeed.unref?.();
+  };
+  ipcMain.on('pet:drag-active', (event, active) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return;
+    if (active) {
+      dragWindows.add(win);
+      startCursorFeed();
+    } else {
+      dragWindows.delete(win);
     }
   });
 

@@ -909,3 +909,28 @@ releaseSpeed=2000 时 1500  → 轻放 ✅
 
 > 快照同时补了 `win{w,h}` 与 `lastThrow{x,y,vx,vy}`：下次若仍异常，可一眼区分
 > "是抛掷带走的" 还是 "被边界夹走的"。
+
+### 坑 16：拖拽只走指针位移的约 1/3 就定格（pointermove 依赖命中区）
+
+**症状**：拖拽时宠物跟一段就停，实际位移只有指针位移的约 1/3；两次快照都是同一特征：
+`petX=552`、指针 +894 DIP（应到 `x≈999`）、实际停在 `680`。
+
+**根因**：拖拽的 `pointermove` 监听绑在**宠物命中区**（`this.hit`，一个小矩形）上。
+拖拽时窗口由我们自己的 `setBounds` 逐帧移动，指针很容易跑出命中区 ——
+此时即使有 `setPointerCapture`，一旦窗口/渲染端状态有变化（如穿透翻转、跨屏），
+事件也会中断，拖拽就定格在最后一次采样。
+
+**修法**：拖拽期间由**主进程按帧喂系统光标位置**（`screen.getCursorScreenPoint()`），
+与窗口/命中区无关：
+
+- preload 新增 `setDragActive(bool)` / `onCursor(cb)`；
+- main 在 `pet:drag-active` 期间以 ~16ms 间隔向该窗口发 `pet:cursor {x,y}`；
+- sprite 的 `onCursorSample()` 复用同一套 press 基准与弹簧跟随；
+  **只在 pointer 事件停滞 >60ms 时才接管**（避免两路数据源互相拉扯），
+  并在接管瞬间做一次**常数偏差校准**（吸收光标与 pointer 的单位/原点差异）；
+- 兜底接管期间不喂速度轨迹 → `estimateReleaseVelocity` 因轨迹过期返回 null → 松手原地放下，
+  不会被误判成甩掷。
+
+**另**：渲染端脚本走 `file://`，出现过"文件已更新但页面仍用旧脚本"（快照缺新字段、
+行为像上一版）。helper 启动时 `session.defaultSession.clearCache()` 一次；快照新增 `rev` 字段，
+可直接确认运行版本（当前 `r5`）。

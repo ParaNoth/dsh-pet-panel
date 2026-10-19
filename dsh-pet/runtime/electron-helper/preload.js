@@ -46,6 +46,14 @@ contextBridge.exposeInMainWorld('petBridge', {
   toggleDevTools() {
     ipcRenderer.send('pet:devtools');
   },
+  /** 拖拽开始/结束：主进程据此按帧喂系统光标位置（pointermove 会因窗口移动而中断） */
+  setDragActive(active) {
+    ipcRenderer.send('pet:drag-active', !!active);
+  },
+  /** 订阅主进程喂来的系统光标位置 {x,y}（DIP，与 pointer 事件的 screenX/Y 同单位） */
+  onCursor(cb) {
+    ipcRenderer.on('pet:cursor', (e, p) => cb(p));
+  },
   /** 把一段文本写进系统剪贴板（排障用：一键复制定位信息，不需要开控制台） */
   copyText(text) {
     ipcRenderer.send('pet:copy-text', { text: String(text) });

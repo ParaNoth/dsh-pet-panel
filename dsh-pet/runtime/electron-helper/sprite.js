@@ -201,6 +201,11 @@ class PetSprite {
     this.throwState = null; // 飞行中的实时状态（被撞查询 / 其它窗碰撞检测时上报用）
     this.pressScoreFired = false; // 按下瞬间已触发过积分（pointerdown 即触发；click 据此不重复弹，同浏览器）
     this.lastFlightReport = 0;
+    // 拖拽兜底驱动：主进程按帧喂系统光标位置。pointermove 绑在命中区上，窗口移动后指针
+    // 很容易离开命中区 → 事件停 → 拖拽定格（实测只走 1/3 位移）。光标位置与命中区无关。
+    if (window.petBridge && window.petBridge.onCursor) {
+      window.petBridge.onCursor((p) => this.onCursorSample(p));
+    }
     if (window.petBridge && window.petBridge.onFlightStates) {
       window.petBridge.onFlightStates((states) => {
         if (!states || typeof states !== 'object') return;
@@ -796,6 +801,7 @@ class PetSprite {
       }
     }
     this.stopThrow(); // 空中抓取：从当前落点开始新拖拽（this.pos 实时）
+    this._cursorBias = null; // 每次拖拽重新校准兜底驱动的偏差
     this.stopDragFollow();
     this.stopMove();
     this.dragTrail = [];
@@ -821,6 +827,7 @@ class PetSprite {
     // 拖拽中宠物滞后于光标，光标可能跑到窗口外→窗口翻回穿透→本窗口收不到 pointermove/pointerup
     // （宠物"飞"出去，见 pointer-target.js）。这里上报"我正在用输入"，主进程据此绝不翻回穿透。
     this.syncInputBusy();
+    if (window.petBridge && window.petBridge.setDragActive) window.petBridge.setDragActive(true);
     // 注意：舞台「拍平」（去掉 translateY(bottomPad)）不能在这里做——
     // 纯点击（按下即松开）会让人物瞬移上移再落下。与浏览器一致：只有拖拽超过阈值才拍平。
   }
@@ -843,10 +850,50 @@ class PetSprite {
     }
     // 记录指针轨迹（screenX/Y 采样：与视口坐标只差常数偏移，速度一致；初速估算用；÷scale 进 CSS 系）
     const now = performance.now();
+    // 兜底驱动的激活条件：指针事件还活着时以它为准（避免两路互相拉扯）
+    this._lastPtrMoveAt = now;
+    this._lastPtrCss = { x: toLocal(e.screenX), y: toLocal(e.screenY) };
     this.dragTrail.push({ t: now, x: toLocal(e.screenX), y: toLocal(e.screenY) });
     this.dragTrail = S.trimTrail(this.dragTrail, now);
     // 弹簧目标 = 按下时的宠物位置 + 指针屏幕增量（窗口怎么动都不影响坐标）——不再硬贴指针，
     // 由 rAF 弹簧跟随逐帧追赶（抹平高频抖动，与浏览器同构）
+    this.dragTarget = { x: d.petX + dx, y: d.petY + dy };
+    this.startDragFollow();
+  }
+
+  /**
+   * 主进程喂来的系统光标采样（拖拽兜底驱动）。
+   *
+   * 与 onPointerMove 的区别：
+   *   * 不记录 dragTrail —— 速度估算仍用真实 pointer 事件；若 pointer 事件已断（拖拽被兜底接管），
+   *     轨迹会过期，`estimateReleaseVelocity` 自然返回 null → 松手原地放下，不会被误判成甩掷；
+   *   * 用同一个 press 基准（d.sx/d.sy 与 d.petX/petY），所以与 pointer 路径完全等价。
+   */
+  onCursorSample(p) {
+    const d = this.dragState;
+    if (!d.active || !p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
+    // 只有指针事件**真的停了**才接管：正常拖拽仍走 pointermove（避免两路数据源互相拉扯）
+    if (performance.now() - (this._lastPtrMoveAt || 0) < 60) return;
+    const cx = toLocal(p.x);
+    const cy = toLocal(p.y);
+    // 首次接管时做一次常数偏差校准：系统光标与 pointer 的 screenX/Y 若存在单位/原点差异，
+    // 这里把它吸收掉，避免接管瞬间跳一下。
+    if (!this._cursorBias) {
+      const ref = this._lastPtrCss || { x: d.sx, y: d.sy };
+      this._cursorBias = { x: cx - ref.x, y: cy - ref.y };
+      this._cursorBiasAt = { x: ref.x, y: ref.y };
+    }
+    const px = cx - this._cursorBias.x;
+    const py = cy - this._cursorBias.y;
+    const dx = px - d.sx;
+    const dy = py - d.sy;
+    if (!d.dragging) {
+      if (Math.hypot(dx, dy) < S.DRAG_THRESHOLD) return;
+      d.dragging = true;
+      this.stage.style.transform = 'none';
+      if (this.animations.drag.length) this.playOnce(S.pick(this.animations.drag));
+      this.syncInputBusy();
+    }
     this.dragTarget = { x: d.petX + dx, y: d.petY + dy };
     this.startDragFollow();
   }
@@ -858,6 +905,7 @@ class PetSprite {
     d.dragging = false;
     this.hit.classList.remove('dragging');
     this.stopDragFollow(); // 弹簧跟随立即停（位置定格在实时 this.pos）
+    if (window.petBridge && window.petBridge.setDragActive) window.petBridge.setDragActive(false);
     this.stage.style.transform = 'translateY(' + this.bottomPad + 'px)';
     this.syncInputBusy(); // 拖拽结束：交还给常规判定（幂等，非拖拽时多调一次不发 IPC）
     if (wasDragging) {
