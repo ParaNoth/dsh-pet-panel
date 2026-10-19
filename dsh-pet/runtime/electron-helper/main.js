@@ -706,6 +706,9 @@ app.whenReady().then(() => {
   ipcMain.on('pet:set-interactive', (event, interactive) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return;
+    // 渲染端还在用输入（拖拽/菜单/弹窗）时，忽略"翻回穿透"的请求：
+    // 翻了就断输入链（指针捕获也救不了），表现为拖拽中途定格、松手被弹走。
+    if (!interactive && inputBusy.get(win.id) === true) return;
     setWindowIgnore(win, !interactive);
   });
 

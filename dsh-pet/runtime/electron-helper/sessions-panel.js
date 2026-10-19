@@ -419,14 +419,8 @@ class SessionsPanel {
     //
     // 边界要考虑两重裁切：窗口被 OS 裁掉的部分（面板在窗口外就看不见），
     // 以及工作区边缘。所以下界/上界同时受这两者约束。
-    const wa = this.desktopRect(sprite);
-    // ⚠️ 字段名陷阱：AREAS 的元素是 {x, y, width, height}（shared-core 的 translateRects 生成），
-    // 而 VIEW 用的是 {x, y, w, h} —— 两者不一致！这里踩过：写成 wa.w 得到 undefined，
-    // waRight 变成 NaN，于是下面所有比较都是 false，面板被摆到"离居中最近的可行位置"那个
-    // 退化分支上（表现为整块偏在窗口左边）。读宽高一律走 rectSize() 兼容两种命名。
-    const waRight = wa.x + rectSize(wa, 'w');
-    const waBottom = wa.y + rectSize(wa, 'h');
     const winW = window.innerWidth;                            // 窗口宽（恒 ≈ 2×size）
+    const winH = Number(sprite.winH) || window.innerHeight || VIEW.h; // 窗口高
     if (!(winW > 0)) return;
     // 窗口左/上缘，**与 AREAS 同一坐标系**：AREAS 是「外接矩形原点」相对坐标
     //（= 屏幕坐标 − VIEW 原点），sprite.pos 也已经是这个坐标系里的值。
@@ -434,14 +428,47 @@ class SessionsPanel {
     // 等价，多屏且原点非 0（如左侧还有一块屏）就会算错夹取边界。
     const winLocalL = sprite.pos.x - sprite.margin.l;
     const winLocalT = sprite.pos.y - sprite.margin.t;
+    const winR = winLocalL + winW;
+    const winB = winLocalT + winH;
+
+    // ---- 允许范围：**与窗口相交的所有屏**的并集外包 ----
+    // 为什么不是"宠物中心所在那块屏"：宠物骑在屏缝上时（很常见），居中位置会跨到相邻屏，
+    // 而两块屏**都在可视范围内**。按单屏夹取会把面板硬推进当前屏内、看起来"不居中"
+    //（实测：宠物中心 x=799、第二屏从 756 开始 → 面板被推到 left=141，而居中应是 90）。
+    // 取并集外包后，跨缝居中不再被误夹。
+    //
+    // ⚠️ 字段名陷阱：AREAS 的元素是 {x, y, width, height}（shared-core 的 translateRects 生成），
+    // 而 VIEW 用的是 {x, y, w, h} —— 读宽高一律走 rectSize() 兼容两种命名。
+    let boundL = Infinity;
+    let boundR = -Infinity;
+    let boundT = Infinity;
+    let boundB = -Infinity;
+    for (const a of AREAS) {
+      const aw = rectSize(a);
+      const ah = rectSize(a, 'h');
+      if (a.x + aw <= winLocalL || a.x >= winR) continue; // 与窗口无横向交集
+      boundL = Math.min(boundL, a.x);
+      boundR = Math.max(boundR, a.x + aw);
+      boundT = Math.min(boundT, a.y);
+      boundB = Math.max(boundB, a.y + ah);
+    }
+    if (!Number.isFinite(boundL)) {
+      // 极端兜底：窗口不与任何屏相交 → 退回宠物中心那块屏（保持旧行为）
+      const wa = this.desktopRect(sprite);
+      boundL = wa.x;
+      boundR = wa.x + rectSize(wa);
+      boundT = wa.y;
+      boundB = wa.y + rectSize(wa, 'h');
+    }
+    const waRight = boundR; // 供下方几何自检使用
 
     // 宠物**视觉中心**：包围盒中心（命中框中心即包围盒中心），面板以它为基准才对齐身体
     const bodyCx = sprite.pos.x + size / 2;
-    const idealLeft = bodyCx - PANEL_NATURAL_W / 2; // 屏幕坐标下的"居中"位置
+    const idealLeft = bodyCx - PANEL_NATURAL_W / 2;
 
-    // 左界：不能越过窗口左缘与工作区左缘；右界同理（都要留 EDGE_PAD）
-    const minScreenL = Math.max(winLocalL, wa.x) + EDGE_PAD;
-    const maxScreenL = Math.min(winLocalL + winW, waRight) - PANEL_NATURAL_W - EDGE_PAD;
+    // 左界：不能越过窗口左缘与可视区域左缘；右界同理（都要留 EDGE_PAD）
+    const minScreenL = Math.max(winLocalL, boundL) + EDGE_PAD;
+    const maxScreenL = Math.min(winR, boundR) - PANEL_NATURAL_W - EDGE_PAD;
     // 上界可能小于下界（窗口窄到放不下面板时）：取"离居中最近"的可行值，宁可略微出界也不夹成负数
     const screenL = maxScreenL >= minScreenL
       ? Math.min(Math.max(idealLeft, minScreenL), maxScreenL)
@@ -486,9 +513,9 @@ class SessionsPanel {
     }
 
     // 竖直方向同理：理想位置是窗口顶部那 4px，越界时往下让（贴着工作区上缘）
-    const minTop = Math.max(winLocalT, wa.y) + EDGE_PAD;
+    const minTop = Math.max(winLocalT, boundT) + EDGE_PAD;
     this.el.style.setProperty('--sess-panel-top', Math.round(minTop - winLocalT) + 'px');
-    const roomH = waBottom - minTop - EDGE_PAD;
+    const roomH = boundB - minTop - EDGE_PAD;
     if (Number.isFinite(roomH)) {
       this.el.style.setProperty('--sess-avail-h', Math.round(Math.max(0, roomH)) + 'px');
     }

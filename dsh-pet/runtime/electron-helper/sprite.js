@@ -183,10 +183,14 @@ class PetSprite {
     window.addEventListener(
       'mouseleave',
       () => {
-        // 光标离开窗口：菜单若开着立刻收起（菜单是窗口内 DOM，离开即不可达），再恢复穿透；
-        // 对话弹窗开着则不恢复——弹窗是窗口内 DOM，鼠标还要回来点输入框（与 menuOpen 同守卫）
+        // 光标离开窗口：菜单若开着立刻收起（菜单是窗口内 DOM，离开即不可达），再恢复穿透。
+        // **但拖拽/飞行中绝不能翻穿透**：宠物窗口会跟着光标逐帧移动，光标很容易短暂离开窗口，
+        // 一旦翻成穿透，pointermove/pointerup 就断了——表现是"拖不到那儿、松手被弹走"
+        //（实测：按下后应为 +954 DIP，实际只走了 314，随后被物理夹到区域边界）。
+        // 菜单/对话弹窗同样属于"正在用输入"，一并挡住（与 inputBusy 的语义一致）。
         this.closeMenu();
-        if (!this.chatOpen) this.setInteractive(false);
+        if (this.inputBusy()) return;
+        this.setInteractive(false);
       },
       { signal: ac.signal },
     );
