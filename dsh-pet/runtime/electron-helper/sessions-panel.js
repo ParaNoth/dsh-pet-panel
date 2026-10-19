@@ -372,6 +372,14 @@ class SessionsPanel {
     const key = sprite.pos.x + ',' + sprite.pos.y + ',' + window.innerWidth + ',' + waKey;
     if (this._posKey === key) return;
     this._posKey = key;
+    // 桌面几何变了（插拔屏/改分辨率/旋转）：迟滞与"上次参考屏"必须作废，
+    // 否则宠物没动、只换了屏的情况下，新的正确位置会被迟滞一直挡掉。
+    if (this._geoKey !== waKey) {
+      this._geoKey = waKey;
+      this._area = null;
+      this._appliedLeft = undefined;
+      this._lastPet = undefined;
+    }
     const size = Number(sprite.size) || 0;
     if (size <= 0) return;
 
@@ -393,40 +401,60 @@ class SessionsPanel {
     const waBottom = wa.y + rectSize(wa, 'h');
     const winW = window.innerWidth;                            // 窗口宽（恒 ≈ 2×size）
     if (!(winW > 0)) return;
-    const winScreenL = sprite.pos.x + VIEW.x - sprite.margin.l; // 窗口左缘（屏幕 x）
-    const winTop = sprite.pos.y + VIEW.y - sprite.margin.t;     // 窗口上缘（屏幕 y）
+    // 窗口左/上缘，**与 AREAS 同一坐标系**：AREAS 是「外接矩形原点」相对坐标
+    //（= 屏幕坐标 − VIEW 原点），sprite.pos 也已经是这个坐标系里的值。
+    // 旧写法额外加 VIEW.x/y 得到屏幕坐标，再与 AREAS 比较 —— 单屏或外接矩形原点为 0 时恰好
+    // 等价，多屏且原点非 0（如左侧还有一块屏）就会算错夹取边界。
+    const winLocalL = sprite.pos.x - sprite.margin.l;
+    const winLocalT = sprite.pos.y - sprite.margin.t;
 
     // 宠物**视觉中心**：包围盒中心（命中框中心即包围盒中心），面板以它为基准才对齐身体
     const bodyCx = sprite.pos.x + size / 2;
     const idealLeft = bodyCx - PANEL_NATURAL_W / 2; // 屏幕坐标下的"居中"位置
 
     // 左界：不能越过窗口左缘与工作区左缘；右界同理（都要留 EDGE_PAD）
-    const minScreenL = Math.max(winScreenL, wa.x) + EDGE_PAD;
-    const maxScreenL = Math.min(winScreenL + winW, waRight) - PANEL_NATURAL_W - EDGE_PAD;
+    const minScreenL = Math.max(winLocalL, wa.x) + EDGE_PAD;
+    const maxScreenL = Math.min(winLocalL + winW, waRight) - PANEL_NATURAL_W - EDGE_PAD;
     // 上界可能小于下界（窗口窄到放不下面板时）：取"离居中最近"的可行值，宁可略微出界也不夹成负数
     const screenL = maxScreenL >= minScreenL
       ? Math.min(Math.max(idealLeft, minScreenL), maxScreenL)
       : (idealLeft < minScreenL ? minScreenL : maxScreenL);
-    this.el.style.setProperty('--sess-panel-left', Math.round(screenL - winScreenL) + 'px');
+    // ---- 时间迟滞：位置只微小变化时，禁止面板大幅横跳 ----
+    // 宠物在多屏接缝上来回轻微移动（漫游反复试走/物理回弹）时，参考屏会在两块屏之间翻面，
+    // 而两块屏的夹取基准差得远（实测 90px 级）——表现就是"面板一直闪"。
+    // 规则：本次目标与上次已应用值相差 > JUMP 时，只有宠物**累计移动**超过 MOVE 才接受新的位置；
+    // 否则保持不动。真走路跨屏时位移会持续累积，很快越过 MOVE，不会卡住。
+    const wantedLeft = Math.round(screenL - winLocalL);
+    const PET_MOVE_EPS = 12;
+    const PANEL_JUMP_EPS = 24;
+    const petMoved = this._lastPet === undefined
+      ? Infinity
+      : Math.abs(sprite.pos.x - this._lastPet.x) + Math.abs(sprite.pos.y - this._lastPet.y);
+    const willJump = this._appliedLeft !== undefined && Math.abs(wantedLeft - this._appliedLeft) > PANEL_JUMP_EPS;
+    if (!(willJump && petMoved < PET_MOVE_EPS)) {
+      this.el.style.setProperty('--sess-panel-left', wantedLeft + 'px');
+      this._appliedLeft = wantedLeft;
+      this._lastPet = { x: sprite.pos.x, y: sprite.pos.y };
+    }
     // ---- 几何自检（有意保留，不是调试残留）----
     // 渲染端没有任何日志通道（主进程写文件在这台机器上静默失败、devtools 也不在跟前），
     // 所以把「边界算坏了」这件事**画在标题栏上**：健康时留空、完全不占地方，
-    // 只有 screenL / waRight / winScreenL 出现非有限值时才显示 GEOM BAD + 关键量。
+    // 只有 screenL / waRight / winLocalL 出现非有限值时才显示 GEOM BAD + 关键量。
     // 价值已被验证：面板偏左那次就是靠它读出 "wa0-NaN"，一眼定位到 AREAS 的
     // 宽高字段名读错（详见 CHANGELOG.fork.md「坑 3」）。
     if (this.diagEl) {
-      const healthy = Number.isFinite(screenL) && Number.isFinite(waRight) && Number.isFinite(winScreenL);
+      const healthy = Number.isFinite(screenL) && Number.isFinite(waRight) && Number.isFinite(winLocalL);
       this.diagEl.textContent = healthy
         ? ''
         : 'GEOM BAD win' + Math.round(winW) +
           ' pet' + Math.round(size) + '@' + Math.round(sprite.pos.x) +
-          ' left' + Math.round(screenL - winScreenL) +
+          ' left' + Math.round(screenL - winLocalL) +
           ' wa' + Math.round(wa.x) + '-' + waRight;
     }
 
     // 竖直方向同理：理想位置是窗口顶部那 4px，越界时往下让（贴着工作区上缘）
-    const minTop = Math.max(winTop, wa.y) + EDGE_PAD;
-    this.el.style.setProperty('--sess-panel-top', Math.round(minTop - winTop) + 'px');
+    const minTop = Math.max(winLocalT, wa.y) + EDGE_PAD;
+    this.el.style.setProperty('--sess-panel-top', Math.round(minTop - winLocalT) + 'px');
     const roomH = waBottom - minTop - EDGE_PAD;
     if (Number.isFinite(roomH)) {
       this.el.style.setProperty('--sess-avail-h', Math.round(Math.max(0, roomH)) + 'px');
@@ -442,12 +470,32 @@ class SessionsPanel {
     const size = Number(sprite.size) || 0;
     const cx = sprite.pos.x + size / 2;
     const cy = sprite.pos.y + size / 2;
-    if (typeof S !== 'undefined' && S && typeof S.resolveRect === 'function' && AREAS && AREAS.length) {
-      const r = S.resolveRect(AREAS, cx, cy);
-      if (r) return r;
-    }
+    const S_ = typeof S !== 'undefined' ? S : null;
     // 兜底：AREAS 未就绪时把整个视口当一块屏（命名与 AREAS 保持一致）
-    return (AREAS && AREAS[0]) || { x: 0, y: 0, width: VIEW.w, height: VIEW.h };
+    if (!(AREAS && AREAS.length)) return { x: 0, y: 0, width: VIEW.w, height: VIEW.h };
+    // 1) 点位落在某块屏内：直接用
+    if (S_ && typeof S_.rectAtPoint === 'function') {
+      const hit = S_.rectAtPoint(AREAS, cx, cy);
+      if (hit) {
+        this._area = hit;
+        return hit;
+      }
+    }
+    // 2) 落在**空洞**里（多屏外接矩形中不被任何屏覆盖的区域）：
+    //    粘住上一次选中的屏，只有明显离开（超过一个宠物身位）才重新选。
+    //
+    //    为什么必须粘：宠物在接缝/空洞边缘轻微移动时，`resolveRect` 的"最近屏"会在两块屏
+    //    之间来回翻；而两块屏的夹取基准（wa.x / waRight）差得很远，面板就会在两个位置之间
+    //    **持续闪烁**（实测：第二屏左缘正好是空洞边界）。粘滞把这个二值翻转变成带容差的判断。
+    const last = this._area;
+    if (last && AREAS.indexOf(last) !== -1 && S_ && typeof S_.distToRectSq === 'function') {
+      const tol = Math.max(40, size);
+      if (S_.distToRectSq(last, cx, cy) <= tol * tol) return last;
+    }
+    const r = S_ && typeof S_.resolveRect === 'function' ? S_.resolveRect(AREAS, cx, cy) : null;
+    const picked = r || AREAS[0];
+    this._area = picked;
+    return picked;
   }
 
   /** 把 /balance 的响应转成一行文案（provider 未登记时明确说明原因，不静默） */
