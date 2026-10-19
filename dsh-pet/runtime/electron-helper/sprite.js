@@ -902,30 +902,9 @@ class PetSprite {
             ' |v|=' +
             Math.round(Math.hypot(vel.vx, vel.vy)),
         );
-        /**
-         * 跨屏放置例外：宠物身体同时压住两块屏时，**直接放下**，不交给抛掷物理。
-         *
-         * 为什么：抛掷/落地按"身体中心所在那块屏"的边界夹取，两侧各留 sideAllow
-         *（= (HIT_BOX.x0/640)×size ≈ 56px）。于是屏缝附近存在一段**放置禁区**：
-         *   第二屏：左界 = 屏左 − sideAllow ≈ 700
-         *   主  屏：右界 = 屏右 − size + sideAllow ≈ 632
-         * 落在 632..700 之间的位置会被夹到两端之一 —— 表现为"这块区域怎么都放不进去"。
-         * 但这段位置在视觉上是**完全合法**的（身体横跨两块都可见的屏），所以直接放行。
-         * 只在"身体确实压住两块屏"时例外，其它位置仍保留抛掷手感。
-         */
-        const boxL = px;
-        const boxR = px + this.size;
-        const touching = AREAS.filter((a) => {
-          const w = (a && (a.width ?? a.w)) || 0;
-          return a.x < boxR && a.x + w > boxL;
-        }).length;
-        if (touching >= 2) {
-          this.customPos = { rx: (px + this.halfW) / VIEW.w, ry: (py + this.halfH) / VIEW.h };
-          this.position();
-          window.__dshPetDebug.lastDragRelease = { x: this.pos.x, y: this.pos.y, straddle: true };
-        } else {
-          this.startThrow(px, py, vel.vx, vel.vy);
-        }
+        // 跨屏放置现在由物理统一处理（见 shared-core 的 throwSpace：x 用并集外包、
+        // y 按当前屏、中心必须落在某块屏上），不再需要"跨屏就跳过抛掷"的特例。
+        this.startThrow(px, py, vel.vx, vel.vy);
       } else {
         // customPos 语义 = 宠物**中心**比例（position() 用 rx*W - halfW 还原左上角；
         // startThrow 落定也按同一公式存），松手无边界夹取

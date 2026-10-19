@@ -1063,13 +1063,52 @@ const throwBoundsIn = (area, size, sideAllow) => {
 		maxY: rectBottom(area) - h
 	};
 };
-const throwSpace = (o) => ({
-	bounds: o.areas.map((a) => throwBoundsIn(a, o.size, o.sideAllow)),
-	areas: o.areas,
-	panels: o.panels && o.panels.length === o.areas.length ? o.panels : o.areas,
-	size: o.size,
-	sideAllow: o.sideAllow
-});
+/**
+ * 所有屏幕的并集外包矩形（CSS 视口坐标）。
+ * @param rects 屏幕矩形数组（{x,y,width,height} 或 {x,y,w,h}）
+ */
+const unionRect = (rects) => {
+	let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+	for (const r of rects) {
+		const w = r.width ?? r.w;
+		const h = r.height ?? r.h;
+		if (!(w > 0) || !(h > 0)) continue;
+		x0 = Math.min(x0, r.x);
+		y0 = Math.min(y0, r.y);
+		x1 = Math.max(x1, r.x + w);
+		y1 = Math.max(y1, r.y + h);
+	}
+	if (!Number.isFinite(x0)) return { x: 0, y: 0, width: 0, height: 0 };
+	return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+};
+/**
+ * 抛掷/落地的可行域。
+ *
+ * **x 用"所有屏幕的并集外包"**，而不是每块屏各自内缩 sideAllow —— 否则屏缝两侧各有一个
+ * 内缩边界（第二屏左界 = 屏左 − sideAllow、前一块屏右界 = 屏右 − size + sideAllow），
+ * 中间会留下一条"谁都放不进去"的窄带。
+ * **y 仍按当前屏**：屏幕高度参差不齐时，宠物应被限制在它所在那块屏的上下边缘内
+ *（对得齐的部分自然对齐，对不齐的按该屏边缘算）。
+ * 外边缘仍保留 sideAllow：宠物画布有透明留白，允许挂出去才能让可见身体贴边。
+ */
+const throwSpace = (o) => {
+	const hull = unionRect(o.areas);
+	return {
+		bounds: o.areas.map((a) => {
+			const b = throwBoundsIn(a, o.size, o.sideAllow);
+			return {
+				...b,
+				minX: hull.x - o.sideAllow,
+				maxX: hull.x + hull.width - o.size + o.sideAllow
+			};
+		}),
+		areas: o.areas,
+		panels: o.panels && o.panels.length === o.areas.length ? o.panels : o.areas,
+		hull,
+		size: o.size,
+		sideAllow: o.sideAllow
+	};
+};
 const screenOfBox = (space, x, y) => {
 	const cx = x + space.size / 2;
 	const cy = y + space.size * 9 / 16 / 2;
@@ -1192,6 +1231,25 @@ const throwStepRegion = (s, dtRaw, space, physics = DEFAULT_PHYSICS) => {
 		atRest: false
 	};
 	const h = space.size * 9 / 16;
+	// ---- 规则一：宠物**中心**必须落在某块屏上 ----
+	// x 用并集之后就可能在"两块屏之间的竖向缝隙"里滑动；这里每帧把中心夹回最近一块屏，
+	// 保证宠物任何时候都至少在一处可见（不要求在两边同时显示，画布可以越界）。
+	{
+		const ccx = x + space.size / 2;
+		const ccy = y + h / 2;
+		if (indexAtPoint(space.panels, ccx, ccy) < 0) {
+			const ni = nearestIndex(space.panels, ccx, ccy);
+			if (ni >= 0) {
+				const p = space.panels[ni];
+				const nx = Math.min(Math.max(ccx, p.x + 1), rectRight(p) - 1) - space.size / 2;
+				const ny = Math.min(Math.max(ccy, p.y + 1), rectBottom(p) - 1) - h / 2;
+				x = nx;
+				y = ny;
+				vx = 0;
+				if (vy < 0) vy = 0;
+			}
+		}
+	}
 	let bounced = false;
 	let cur = screenOfBox(space, x, y);
 	let b = space.bounds[cur];
