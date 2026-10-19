@@ -559,10 +559,21 @@ class SessionsPanel {
     const S_ = typeof S !== 'undefined' ? S : null;
     // 兜底：AREAS 未就绪时把整个视口当一块屏（命名与 AREAS 保持一致）
     if (!(AREAS && AREAS.length)) return { x: 0, y: 0, width: VIEW.w, height: VIEW.h };
-    // 1) 点位落在某块屏内：直接用
+    // 1) 点位落在某块屏内：直接用，但**换屏要越过一段死区**。
+    // 没有死区时，宠物中心停在屏缝上（或在其附近轻微抖动）会让参考屏逐帧翻转，
+    // 而两块屏的夹取基准差约 170px —— 面板就会在两个位置之间慢闪（约 3Hz）。
+    // 规则：要切到另一块屏，中心必须已经进入那块屏 margin 之内。
     if (S_ && typeof S_.rectAtPoint === 'function') {
       const hit = S_.rectAtPoint(AREAS, cx, cy);
       if (hit) {
+        const prev = this._area;
+        if (prev && prev !== hit && AREAS.indexOf(prev) !== -1) {
+          const aw = rectSize(hit);
+          const ah = rectSize(hit, 'h');
+          const depth = Math.min(cx - hit.x, hit.x + aw - cx, cy - hit.y, hit.y + ah - cy);
+          const margin = Math.min(32, Math.max(8, size * 0.15));
+          if (depth < margin) return prev; // 还在缝附近：保持原来的参考屏
+        }
         this._area = hit;
         return hit;
       }
