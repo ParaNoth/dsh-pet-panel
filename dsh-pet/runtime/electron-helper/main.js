@@ -251,6 +251,8 @@ const windows = new Map();
 
 /** win.id -> 上一次**请求**的内容区矩形（"x,y,w,h"）：pet:set-bounds 的去重基准，见那里的注释 */
 const lastRequestedBounds = new Map();
+/** win.id -> 宠物身体矩形（屏幕点 {x,y,w,h}）：点击穿透兜底用（大窗口下窗口矩形没意义） */
+const petBodyRects = new Map();
 
 /**
  * 宠物间碰撞 broker 状态：petId -> { x, y, vx, vy, size, bottomPad }。
@@ -395,12 +397,16 @@ function createPetWindows() {
   const pets = petsFromEnv();
   const scale = petScale();
   for (const pet of pets) {
-    // 初始窗口尺寸也要吃缩放补偿，否则启动瞬间会有一次可见的尺寸跳变
-    const { width, height } = petWindowSize(pet.size * scale);
+    // ---- 架构：一个覆盖整个桌面的静态窗口，宠物只是窗口内部移动的 sprite ----
+    // 为什么不跟着宠物移动窗口：macOS 会把"骑在混合 DPI 屏缝上、且大部分落在 1x 屏"的窗口
+    // 挪到别处（裸 Electron 实测差 2560 点），于是每帧再设回来 → 宠物在两个位置之间闪；
+    // 跨屏时还必须在两块屏之间整体切换窗口（必然跳一下）。窗口固定后这些问题从结构上消失：
+    // 拖拽 = 移动 sprite，指针永远在同一个窗口内，跨屏无感。
+    const { width, height } = { width: area.width, height: area.height };
     const win = new BrowserWindow({
       width,
       height,
-      x: area.x, // 初始左上角；renderer 首帧按配置角落/位置校正
+      x: area.x,
       y: area.y,
       show: false,
       useContentSize: true,
@@ -460,10 +466,11 @@ function createPetWindows() {
     // 本进程无从判断这件事——光看光标位置与窗口位移分不清"拖拽跟手"和"漫游/抛掷"，所以由渲染端上报。
     const pointerTimer = setInterval(() => {
       if (pointerFallbackPaused || win.isDestroyed()) return;
-      const b = win.getBounds();
-      if (b.width < 8 || b.height < 8) return; // 尺寸还没落定（renderer 首帧上报前）
+      // 大窗口下窗口矩形恒等于整个桌面，判定必须用**宠物身体矩形**（renderer 上报，屏幕点）
+      const body = petBodyRects.get(win.id);
+      if (!body) return; // 首帧上报前
       const ignoring = windowIgnore.get(win.id) !== false;
-      const next = decideWindowIgnore(b, screen.getCursorScreenPoint(), ignoring, inputBusy.get(win.id) === true);
+      const next = decideWindowIgnore(body, screen.getCursorScreenPoint(), ignoring, inputBusy.get(win.id) === true);
       if (next !== ignoring) setWindowIgnore(win, next);
     }, POINTER_POLL_MS);
     win.on('closed', () => {
@@ -639,63 +646,33 @@ app.whenReady().then(() => {
 
   createPetWindows();
 
-  // 宠物窗口跟随：renderer 逐帧上报窗口内容区位置/尺寸
-  ipcMain.on('pet:set-bounds', (event, bounds) => {
+  // 宠物状态上报（大窗口下窗口不移动，只登记身体矩形与碰撞状态）
+  ipcMain.on('pet:set-bounds', (event, b) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return;
-    const x = Number(bounds?.x);
-    const y = Number(bounds?.y);
-    const width = Number(bounds?.width);
-    const height = Number(bounds?.height);
-    if (![x, y, width, height].every(Number.isFinite)) return;
-    // 去重必须比较**我们上一次请求的值**，绝不能拿 win.getContentBounds() 回读值来比：
-    // 跨缩放屏的 DIP↔物理 往返有 ScaleToEnclosingRect（向外取整）与 origin 舍入，
-    // 读回值与设定值永远不相等，去重永远不生效，反而变成每帧强制重设窗口位置。
-    const rect = { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) };
-    const key = rect.x + ',' + rect.y + ',' + rect.width + ',' + rect.height;
-    if (lastRequestedBounds.get(win.id) !== key) {
-      lastRequestedBounds.set(win.id, key);
-      win.setContentBounds(rect, false);
-      // 诊断：请求后回读实际位置。跨屏时若系统（Space 归属/边界钳制）挪动了窗口，
-      // 这里会出现**大偏差**（>8 DIP）；正常情况只有 DIP↔物理 取整的 1~2px 误差。
-      // 用 40ms / 150ms 两次采样，取偏差更大的一次上报给渲染端。
-      // ⚠️ 必须和**最新一次请求**比对，不能和"发起这次探测时的请求"比：
-      // 拖拽时窗口本来就在移动，40ms 前的位置早已过期（实测会误报 114px 的"失配"）。
-      for (const delay of [60, 180]) {
-        setTimeout(() => {
-          if (win.isDestroyed()) return;
-          const latest = lastRequestedBounds.get(win.id);
-          if (!latest) return;
-          const [lx, ly, lw, lh] = String(latest).split(',').map(Number);
-          const act = win.getContentBounds();
-          const req = { x: lx, y: ly, width: lw, height: lh };
-          const dx = act.x - lx;
-          const dy = act.y - ly;
-          const dw = act.width - lw;
-          const dh = act.height - lh;
-          if (Math.abs(dx) > 8 || Math.abs(dy) > 8 || Math.abs(dw) > 8 || Math.abs(dh) > 8) {
-            win.webContents.send('pet:bounds-mismatch', { req, act, dx, dy, dw, dh, at: Date.now() });
-          }
-        }, delay);
-      }
-    }
-    // 碰撞站场：位置必须用**包围盒左上角**（renderer 显式上报 boxX/boxY）——
-    // 窗口坐标 = 包围盒 − margin（半只宠物宽），直接拿窗口坐标会让跨窗检测整体错位
+    // 大窗口架构：窗口固定覆盖整个桌面，**永不为宠物移动**。本通道只登记宠物状态：
+    //   * 身体命中矩形（屏幕点）→ 点击穿透兜底判定；
+    //   * 跨宠物碰撞站场（boxX/boxY 是包围盒左上角，屏幕点）。
+    const bx = Number(b?.boxX);
+    const by = Number(b?.boxY);
+    const size = Number(b?.size);
+    const bottomPad = Number(b?.bottomPad);
+    const vx = Number(b?.vx);
+    const vy = Number(b?.vy);
+    if (![bx, by, size].every(Number.isFinite) || size <= 0) return;
+    const ch = (size * 9) / 16;
+    petBodyRects.set(win.id, {
+      x: bx + (200 / 640) * size,
+      y: by + (Number.isFinite(bottomPad) ? bottomPad : 0) + (50 / 360) * ch,
+      width: ((440 - 200) / 640) * size,
+      height: ((335 - 50) / 360) * ch,
+    });
     const petId = [...windows.keys()].find((id) => windows.get(id) === win);
     if (petId) {
-      const bx = Number(bounds?.boxX);
-      const by = Number(bounds?.boxY);
-      const size = Number(bounds?.size);
-      const bottomPad = Number(bounds?.bottomPad);
-      const vx = Number(bounds?.vx);
-      const vy = Number(bounds?.vy);
-      // 位置 + 尺寸 + 速度一并登记：set-bounds 是每次位置变化都会触发的全量上报
-      // （此前只更新 x/y，静止宠物 size 永远为 0，跨窗碰撞检测 `!o.size` 直接跳过它）；
-      // 速度取渲染端上报值（飞行中实时、静止/拖拽 = 0），落地后不再残留旧飞行速度。
       updatePetState(petId, {
-        x: Number.isFinite(bx) ? bx : x,
-        y: Number.isFinite(by) ? by : y,
-        size: Number.isFinite(size) && size > 0 ? size : petStates.get(petId)?.size || 0,
+        x: bx,
+        y: by,
+        size,
         bottomPad: Number.isFinite(bottomPad) && bottomPad > 0 ? bottomPad : petStates.get(petId)?.bottomPad || 0,
         vx: Number.isFinite(vx) ? vx : 0,
         vy: Number.isFinite(vy) ? vy : 0,
@@ -847,7 +824,15 @@ app.whenReady().then(() => {
     const geo = deskGeometry();
     lastRequestedBounds.clear(); // 坐标系变了，去重缓存作废，下一帧必须真的重设一次
     for (const win of windows.values()) {
-      if (!win.isDestroyed()) win.webContents.send('pet:displays', geo);
+      if (win.isDestroyed()) continue;
+      // 桌面几何变化：把"静态大窗口"重挂到新的外接矩形上（这是唯一允许窗口移动的时机）
+      try {
+        win.setContentBounds(
+          { x: geo.hull.x, y: geo.hull.y, width: geo.hull.width, height: geo.hull.height },
+          false,
+        );
+      } catch {}
+      win.webContents.send('pet:displays', geo);
     }
     console.error('[dsh-pet-desktop-helper] displays changed: ' + JSON.stringify(geo));
     // 主屏缩放可能一起变了（它决定宠物的尺寸补偿）。线性化生效期间 screen API 只报被强制的值，

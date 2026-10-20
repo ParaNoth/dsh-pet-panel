@@ -433,164 +433,41 @@ class SessionsPanel {
    *
    * @param sprite 宠物（提供 pos/margin/size），布局变化时调用
    */
+  /**
+   * 摆放面板（大窗口架构）。
+   *
+   * 窗口固定覆盖整个桌面，所以面板与宠物处在**同一套坐标**里，不需要再做窗口/余量换算：
+   *   * 水平：居中于宠物，夹进"宠物中心所在那块屏"（不越出可见屏幕）；
+   *   * 竖直：放在宠物头顶上方，越界则贴住屏幕顶部；
+   *   * 可用高度交给 CSS（--sess-avail-h）。
+   */
   reposition(sprite) {
-    if (!this.el || !sprite || !sprite.pos || !sprite.margin) return;
-    // 去重：sendBounds 每帧都可能调用，位置没变就不重复动 DOM。
-    // 除了位置还要带上工作区几何与窗口宽 —— 插拔显示器/改分辨率时宠物位置可能没变，
-    // 但边界已经变了（少了这些，面板会继续按旧屏的余量摆放）。
-    const waKey = (AREAS && AREAS.length)
-      ? AREAS.map((a) => a.x + ':' + a.y + ':' + a.w + ':' + a.h).join('|')
-      : '';
-    const key = sprite.pos.x + ',' + sprite.pos.y + ',' + window.innerWidth + ',' + waKey;
-    if (this._posKey === key) return;
-    this._posKey = key;
-    // 桌面几何变了（插拔屏/改分辨率/旋转）：迟滞与"上次参考屏"必须作废，
-    // 否则宠物没动、只换了屏的情况下，新的正确位置会被迟滞一直挡掉。
-    if (this._geoKey !== waKey) {
-      this._geoKey = waKey;
-      this._area = null;
-      this._appliedLeft = undefined;
-      this._pendingLeft = undefined;
-      this._pendingSince = undefined;
-      if (this._settleTimer !== null) {
-        window.clearTimeout(this._settleTimer);
-        this._settleTimer = null;
-      }
+    if (!this.el) return;
+    const size = sprite.size;
+    const cx = sprite.pos.x + size / 2;
+    const cy = sprite.pos.y + size / 2;
+    const area = S.resolveRect(AREAS, cx, cy) || (PANELS.length ? PANELS[0] : null);
+    let left = Math.round(cx - PANEL_NATURAL_W / 2);
+    let availH = 0;
+    if (area) {
+      const aw = area.width ?? area.w;
+      const ah = area.height ?? area.h;
+      const lo = area.x + EDGE_PAD;
+      const hi = Math.max(lo, area.x + aw - PANEL_NATURAL_W - EDGE_PAD);
+      left = Math.min(Math.max(left, lo), hi);
+      availH = Math.max(0, area.y + ah - EDGE_PAD - sprite.pos.y - 6);
     }
-    const size = Number(sprite.size) || 0;
-    if (size <= 0) return;
-
-    // ---- 位置：以宠物中心为基准居中，只在会越界时**平移收进来**（夹取，不是换边）----
-    //
-    // 为什么是夹取而不是"换边"：换边是"贴在身体左/右侧"的排版，结果永远偏在一边
-    //（实测反馈："这个窗口直接偏了"）。用户要的是**优先居中，其次不越界**，
-    // 这正是 clamp(理想位置, 下界, 上界) 的语义 —— 居中放得下就居中，
-    // 放不下才贴着边界停住，且始终是"离居中最近"的那个位置。
-    //
-    // 边界要考虑两重裁切：窗口被 OS 裁掉的部分（面板在窗口外就看不见），
-    // 以及工作区边缘。所以下界/上界同时受这两者约束。
-    const winW = window.innerWidth;                            // 窗口宽（恒 ≈ 2×size）
-    const winH = Number(sprite.winH) || window.innerHeight || VIEW.h; // 窗口高
-    if (!(winW > 0)) return;
-    // 窗口左/上缘，**与 AREAS 同一坐标系**：AREAS 是「外接矩形原点」相对坐标
-    //（= 屏幕坐标 − VIEW 原点），sprite.pos 也已经是这个坐标系里的值。
-    // 旧写法额外加 VIEW.x/y 得到屏幕坐标，再与 AREAS 比较 —— 单屏或外接矩形原点为 0 时恰好
-    // 等价，多屏且原点非 0（如左侧还有一块屏）就会算错夹取边界。
-    const winLocalL = sprite.pos.x - sprite.margin.l;
-    const winLocalT = sprite.pos.y - sprite.margin.t;
-    const winR = winLocalL + winW;
-    const winB = winLocalT + winH;
-
-    // ---- 允许范围：**与窗口相交的所有屏**的并集外包 ----
-    // 为什么不是"宠物中心所在那块屏"：宠物骑在屏缝上时（很常见），居中位置会跨到相邻屏，
-    // 而两块屏**都在可视范围内**。按单屏夹取会把面板硬推进当前屏内、看起来"不居中"
-    //（实测：宠物中心 x=799、第二屏从 756 开始 → 面板被推到 left=141，而居中应是 90）。
-    // 取并集外包后，跨缝居中不再被误夹。
-    //
-    // ⚠️ 字段名陷阱：AREAS 的元素是 {x, y, width, height}（shared-core 的 translateRects 生成），
-    // 而 VIEW 用的是 {x, y, w, h} —— 读宽高一律走 rectSize() 兼容两种命名。
-    // 允许范围 = **宠物所在那块屏**的工作区。
-    // 为什么不用"整个桌面并集"：宠物贴到屏幕边缘时，面板必须被收回到**这块屏可见范围**内
-    //（否则会跨到相邻屏或空洞上，观感就是"越界了"）。跨屏居中由"宠物在哪块屏"自然切换，
-    // 配合下方的稳定判定（150ms + 定时器兜底）不会闪。
-    const wa = this.desktopRect(sprite);
-    const waRight = wa.x + rectSize(wa, 'w');
-    const boundL = wa.x;
-    const boundR = waRight;
-    const boundT = wa.y;
-    const boundB = wa.y + rectSize(wa, 'h');
-
-    // 宠物**视觉中心**：包围盒中心（命中框中心即包围盒中心），面板以它为基准才对齐身体
-    const bodyCx = sprite.pos.x + size / 2;
-    const idealLeft = bodyCx - PANEL_NATURAL_W / 2;
-
-    // 左界：不能越过窗口左缘与可视区域左缘；右界同理（都要留 EDGE_PAD）
-    const minScreenL = Math.max(winLocalL, boundL) + EDGE_PAD;
-    const maxScreenL = Math.min(winR, boundR) - PANEL_NATURAL_W - EDGE_PAD;
-    // 上界可能小于下界（窗口窄到放不下面板时）：取"离居中最近"的可行值，宁可略微出界也不夹成负数
-    const screenL = maxScreenL >= minScreenL
-      ? Math.min(Math.max(idealLeft, minScreenL), maxScreenL)
-      : (idealLeft < minScreenL ? minScreenL : maxScreenL);
-    // ---- 时间迟滞：大幅跳变要"稳定存在"才应用（消除接缝闪烁）----
-    // 宠物在接缝/空洞边缘轻微移动时，夹取基准可能骤变（实测 187px 级），直接应用会两个位置
-    // 疯狂交替（"面板一直闪"）。规则：小幅变化立即应用；大幅跳变需同一目标稳定 150ms，
-    // 且**必须有定时器兜底**——宠物停住后不再有 reposition 调用，只靠"下次调用才应用"会永远卡住
-    //（表现为"明明不在边缘，面板却一直不居中"）。
-    // 硬性兜底：不论上面的边界算出什么，面板**永远留在窗口画布内**。
-    // （跨屏拖动时曾出现"面板被挤出画布"：边界用的是并集，一旦窗口几何与屏幕几何换算有偏差，
-    //   算出的 left 可能超出 [0, winW-面板宽]，溢出部分直接不可见。这一夹取与几何正确性无关。）
-    const maxLeft = Math.max(0, Math.round(winW - PANEL_NATURAL_W));
-    const wantedLeft = Math.min(Math.max(Math.round(screenL - winLocalL), 0), maxLeft);
-    const PANEL_JUMP_EPS = 24;
-    const PANEL_SETTLE_MS = 150;
-    const nowMs = performance.now();
-    if (this._appliedLeft !== undefined && Math.abs(wantedLeft - this._appliedLeft) > PANEL_JUMP_EPS) {
-      // 大幅跳变：同一目标必须连续稳定 PANEL_SETTLE_MS 才应用。
-      // 真正跨屏走路时宠物会在新位置稳定下来，150ms 内自然被接受（不卡死）；
-      // 而在接缝/空洞边缘来回抖时目标每帧都变，永远等不到稳定 —— 面板纹丝不动。
-      if (this._pendingLeft !== wantedLeft) {
-        this._pendingLeft = wantedLeft;
-        this._pendingSince = nowMs;
-        // ⚠️ 必须用定时器兜底：宠物停住后 sendBounds 不再调用，reposition 也就不会再进来，
-        // 挂起的目标会永远不生效 —— 表现为"明明不在边缘，面板却一直不居中"（卡在旧 left）。
-        if (this._settleTimer !== null) window.clearTimeout(this._settleTimer);
-        this._settleTimer = window.setTimeout(() => {
-          this._settleTimer = null;
-          if (this._pendingLeft !== wantedLeft) return;
-          this.applyPanelLeft(wantedLeft);
-        }, PANEL_SETTLE_MS + 30);
-        return;
-      }
-      if (nowMs - (this._pendingSince || 0) < PANEL_SETTLE_MS) return;
-    }
-    this.applyPanelLeft(wantedLeft);
-    // ---- 几何自检（有意保留，不是调试残留）----
-    // 渲染端没有任何日志通道（主进程写文件在这台机器上静默失败、devtools 也不在跟前），
-    // 所以把「边界算坏了」这件事**画在标题栏上**：健康时留空、完全不占地方，
-    // 只有 screenL / waRight / winLocalL 出现非有限值时才显示 GEOM BAD + 关键量。
-    // 价值已被验证：面板偏左那次就是靠它读出 "wa0-NaN"，一眼定位到 AREAS 的
-    // 宽高字段名读错（详见 CHANGELOG.fork.md「坑 3」）。
-    if (this.diagEl) {
-      const healthy = Number.isFinite(screenL) && Number.isFinite(waRight) && Number.isFinite(winLocalL);
-      this.diagEl.textContent = healthy
-        ? ''
-        : 'GEOM BAD win' + Math.round(winW) +
-          ' pet' + Math.round(size) + '@' + Math.round(sprite.pos.x) +
-          ' left' + Math.round(screenL - winLocalL) +
-          ' wa' + Math.round(wa.x) + '-' + waRight;
-    }
-
-    // 竖直方向同理：理想位置是窗口顶部那 4px，越界时往下让（贴着工作区上缘）
-    const minTop = Math.max(winLocalT, boundT) + EDGE_PAD;
-    const topPx = Math.round(minTop - winLocalT);
-    // 轨迹（排障）：left 或 top 或参考屏变化时留一条 —— 一次复制快照就能看出在哪些值之间跳
+    const h = this.el.offsetHeight || 60;
+    const top = Math.max(4, Math.round(sprite.pos.y - h - 6));
+    this.applyPanelLeft(left);
+    this.el.style.setProperty('--sess-panel-top', top + 'px');
+    if (availH > 0) this.el.style.setProperty('--sess-avail-h', Math.round(availH) + 'px');
+    // 轨迹（排障）：位置变化时留一条，复制快照即可回看
     this._trace = this._trace || [];
-    const areaKey = wa ? Math.round(wa.x) + ',' + Math.round(wa.y) : '?';
     const lastTr = this._trace[this._trace.length - 1];
-    // xc = 窗口当前与几块屏相交（>1 表示窗口确实横跨了屏缝；用来验证"跨屏"假设）
-    let xc = 0;
-    for (const p of (typeof PANELS !== 'undefined' ? PANELS : [])) {
-      const pw = rectSize(p), ph = rectSize(p, 'h');
-      if (winLocalL < p.x + pw && winLocalL + winW > p.x && winLocalT < p.y + ph && winLocalT + winH > p.y) xc++;
-    }
-    if (!lastTr || lastTr.area !== areaKey || lastTr.left !== this._appliedLeft || lastTr.top !== topPx || lastTr.xc !== xc) {
-      this._trace.push({
-        xc,
-        t: Math.round(nowMs),
-        px: Math.round(sprite.pos.x),
-        py: Math.round(sprite.pos.y),
-        area: areaKey,
-        left: this._appliedLeft,
-        top: topPx,
-        winL: Math.round(winLocalL),
-        winT: Math.round(winLocalT),
-      });
-      if (this._trace.length > 80) this._trace.shift();
-    }
-    this.el.style.setProperty('--sess-panel-top', topPx + 'px');
-    const roomH = boundB - minTop - EDGE_PAD;
-    if (Number.isFinite(roomH)) {
-      this.el.style.setProperty('--sess-avail-h', Math.round(Math.max(0, roomH)) + 'px');
+    if (!lastTr || lastTr.left !== left || lastTr.top !== top) {
+      this._trace.push({ t: Math.round(performance.now()), px: Math.round(sprite.pos.x), py: Math.round(sprite.pos.y), left, top });
+      if (this._trace.length > 60) this._trace.shift();
     }
   }
 

@@ -75,18 +75,14 @@ const POINTER_POLL_MS = 60;
  * @param {boolean} busy 渲染端是否正在用这个窗口的鼠标输入（拖拽中/菜单开/弹窗开，见 inputBusy）
  * @returns {boolean} 新的穿透状态
  */
-function decideWindowIgnore(bounds, point, ignoring, busy) {
+function decideWindowIgnore(bodyRect, point, ignoring, busy) {
+  // 架构变更（大窗口）：窗口覆盖整个桌面，窗口矩形不再有判定意义。
+  // 这里传入的是**宠物身体矩形**（屏幕点），因此"该不该交互" = "光标是否在宠物身上"。
   if (busy) return false; // 渲染端正拿着输入：绝不翻回穿透（翻了就断它的输入链）
-  const inWindow =
-    point.x >= bounds.x &&
-    point.x < bounds.x + bounds.width &&
-    point.y >= bounds.y &&
-    point.y < bounds.y + bounds.height;
-  if (!inWindow) return true; // 窗外：恢复穿透
-  const r = spriteHitRect(bounds);
-  const inSprite = point.x >= r.left && point.x <= r.right && point.y >= r.top && point.y <= r.bottom;
-  if (inSprite) return false; // 宠物身上：可交互
-  return ignoring; // 窗口余量区：保持（菜单/弹窗可点）
+  const r = bodyRect;
+  const inBody = point.x >= r.x && point.x <= r.x + r.width && point.y >= r.y && point.y <= r.y + r.height;
+  if (inBody) return false; // 宠物身上：可交互
+  return true; // 其余地方：穿透（透明窗口不挡下层应用）
 }
 
 module.exports = { HIT_BOX, CANVAS_H, STAGE_W, POINTER_POLL_MS, spriteHitRect, decideWindowIgnore };
