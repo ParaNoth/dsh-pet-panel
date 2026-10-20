@@ -272,7 +272,7 @@ class SessionsPanel {
         lastThrow: window.__dshPetDebug.lastThrow,
         panelTrace: this._trace ? this._trace.slice(-40) : null,
         // 运行版本身份（每次改渲染端逻辑时 +1）：确认页面加载的是磁盘上的当前版本
-        rev: 'r6',
+        rev: 'r7',
         // 运行版本身份：新版（并集 x）的 minX = −sideAllow；旧版（逐屏内缩）= 屏左 − sideAllow。
         // 一眼就能确认"跑的是不是刚部署的那版"（踩过：文件已更新但 helper 没重启）。
         bounds: (() => {
@@ -590,7 +590,9 @@ class SessionsPanel {
           const aw = rectSize(hit);
           const ah = rectSize(hit, 'h');
           const depth = Math.min(cx - hit.x, hit.x + aw - cx, cy - hit.y, hit.y + ah - cy);
-          const margin = Math.min(32, Math.max(8, size * 0.15));
+          // 死区只用于防抖，不需要大：32px 会导致「宠物中心已进主屏、参考屏还留在副屏」，
+          // 面板因此被夹在副屏左缘（看起来贴在宠物右侧），要再往里 32px 才切回。
+          const margin = 8;
           if (depth < margin) return prev; // 还在缝附近：保持原来的参考屏
         }
         this._area = hit;

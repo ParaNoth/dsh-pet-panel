@@ -1112,11 +1112,38 @@ const throwSpace = (o) => {
 		sideAllow: o.sideAllow
 	};
 };
+/**
+ * 宠物中心属于哪块屏（抛掷/落地的边界基准）。
+ *
+ * **必须带迟滞**：在屏缝上方的空洞带里，"最近屏"会随 1px 的移动在相邻两块屏之间翻转；
+ * 而两块屏的 minY 差可能很大（本机 235.5px），翻一次就把宠物上下弹一次 ——
+ * 表现为"在那块区域里不停闪烁、弹回"。
+ * 规则：中心已明确进入另一块屏（离边界 > margin）才切换；在空洞里则粘住上一次的屏
+ * （离它不超过一个身位时）。状态存在 space 上（每帧复用同一个 space 实例）。
+ */
 const screenOfBox = (space, x, y) => {
 	const cx = x + space.size / 2;
 	const cy = y + space.size * 9 / 16 / 2;
+	const prev = space._screen;
 	const hit = indexAtPoint(space.areas, cx, cy);
-	return hit >= 0 ? hit : nearestIndex(space.areas, cx, cy);
+	if (hit >= 0) {
+		if (prev !== undefined && prev !== hit && prev >= 0 && prev < space.areas.length) {
+			const a = space.areas[hit];
+			const depth = Math.min(cx - a.x, rectRight(a) - cx, cy - a.y, rectBottom(a) - cy);
+			const margin = Math.min(24, Math.max(6, space.size * 0.1));
+			if (depth < margin) return prev;
+		}
+		space._screen = hit;
+		return hit;
+	}
+	// 空洞：粘住上一次的屏（容差一个身位），否则取最近
+	if (prev !== undefined && prev >= 0 && prev < space.areas.length) {
+		const a = space.areas[prev];
+		if (distToRectSq(a, cx, cy) <= Math.max(40, space.size) ** 2) return prev;
+	}
+	const i = nearestIndex(space.areas, cx, cy);
+	space._screen = i;
+	return i;
 };
 const trimTrail = (trail, now) => {
 	const cutoff = now - TRAIL_KEEP_MS;
