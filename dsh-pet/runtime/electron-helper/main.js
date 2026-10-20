@@ -31,6 +31,7 @@
 const { app, BrowserWindow, ipcMain, screen, shell, protocol } = require('electron');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const os = require('node:os');
 const { readFileSync, writeFileSync } = require('node:fs');
 const fsPromises = require('node:fs/promises');
 // 点击穿透兜底通道的纯判定（不依赖 Electron 的 forward 鼠标钩子；见文件头注释）
@@ -251,6 +252,8 @@ const windows = new Map();
 
 /** win.id -> 上一次**请求**的内容区矩形（"x,y,w,h"）：pet:set-bounds 的去重基准，见那里的注释 */
 const lastRequestedBounds = new Map();
+/** 排障：pet:set-bounds 收到次数（确认渲染端→主进程 IPC 是否真的在跑） */
+let setBoundsCount = 0;
 /** win.id -> 宠物身体矩形（屏幕点 {x,y,w,h}）：点击穿透兜底用（大窗口下窗口矩形没意义） */
 const petBodyRects = new Map();
 
@@ -390,9 +393,22 @@ function deskGeometry() {
   return { hull: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }, areas, panels, primaryIndex };
 }
 
+/**
+ * 窗口矩形 = 桌面外接矩形，但上边夹到 **y ≥ 0**。
+ *
+ * macOS 实测约束：原点 y 为负的超大窗口会被系统挪走（请求 (0,-433) 4072×1415 → 实际 (2560,-904)），
+ * 而原点 (0,0) 的超大窗口可以完美保持（已用裸 Electron 验证）。因此窗口上边取 max(hull.y, 0)。
+ * 代价：副屏高出主屏的那一条（hull.y<0 的部分）暂不被窗口覆盖，宠物在那条带里不可见/不可达。
+ */
+function petWindowRect() {
+  const hull = deskGeometry().hull;
+  const top = Math.max(hull.y, 0);
+  return { x: hull.x, top, width: hull.width, height: Math.max(0, hull.y + hull.height - top) };
+}
+
 function createPetWindows() {
   const geo = deskGeometry();
-  const area = geo.hull;
+  const wr = petWindowRect();
   const configUrl = process.env.DSH_PET_CONFIG_URL || 'http://127.0.0.1:3080/dsh-pet-7340/config';
   const pets = petsFromEnv();
   const scale = petScale();
@@ -402,12 +418,12 @@ function createPetWindows() {
     // 挪到别处（裸 Electron 实测差 2560 点），于是每帧再设回来 → 宠物在两个位置之间闪；
     // 跨屏时还必须在两块屏之间整体切换窗口（必然跳一下）。窗口固定后这些问题从结构上消失：
     // 拖拽 = 移动 sprite，指针永远在同一个窗口内，跨屏无感。
-    const { width, height } = { width: area.width, height: area.height };
+    const { width, height } = { width: wr.width, height: wr.height };
     const win = new BrowserWindow({
       width,
       height,
-      x: area.x,
-      y: area.y,
+      x: wr.x,
+      y: wr.top,
       show: false,
       useContentSize: true,
       transparent: true,
@@ -416,6 +432,10 @@ function createPetWindows() {
       skipTaskbar: true,
       resizable: false,
       hasShadow: false,
+      // macOS：允许窗口大于屏幕。否则系统会把 4072×982 的大窗口压成主屏工作区或整体挪走
+      //（实测请求 (0,0) 4072×982 → 实际 (0,38) 1512×895 / (1512,-433)）—— 宠物就会显示错位、
+      // 身体矩形与实际位置不符 → 点不到。裸 Electron 对照：开/关此选项结果分别为保持/被约束。
+      enableLargerThanScreen: true,
       // 可聚焦：对话输入框/菜单需要窗口焦点才能打字（focusable:false 会让输入框永远无法聚焦）。
       // 别把这里当成黑屏的无关项：可聚焦 + 已聚焦本身就是 DWM 视频黑屏的四项触发条件之一（见文件头），
       // 而 show() 出来就是聚焦状态——真正在挡的是「默认整窗穿透」+「小窗几乎不可能完整遮挡视频窗」
@@ -479,7 +499,27 @@ function createPetWindows() {
         setWindowIgnore(win, next);
       }
     }, POINTER_POLL_MS);
+    // 排障：点击链路状态落盘（用户点不到时无法用右键菜单复制诊断，只能由主进程主动写）
+    const diagTimer = setInterval(() => {
+      if (win.isDestroyed()) return;
+      try {
+        const body = petBodyRects.get(win.id) || null;
+        const data = {
+          at: new Date().toISOString(),
+          ignore: windowIgnore.get(win.id),
+          cursor: screen.getCursorScreenPoint(),
+          body,
+          bounds: win.getBounds(),
+          visible: win.isVisible(),
+          busy: inputBusy.get(win.id) === true,
+          setBoundsCount,
+          hull: { x: petWindowRect().x, y: petWindowRect().top, width: petWindowRect().width, height: petWindowRect().height },
+        };
+        writeFileSync(path.join(os.homedir(), '.dsh', 'dsh-pet-click-diag-' + process.pid + '.json'), JSON.stringify(data, null, 1));
+      } catch {}
+    }, 500);
     win.on('closed', () => {
+      clearInterval(diagTimer);
       clearInterval(pointerTimer);
       windows.delete(pet.id);
       lastRequestedBounds.delete(win.id);
@@ -493,10 +533,10 @@ function createPetWindows() {
           bridge: BRIDGE ? '1' : '0',
           scale: String(scale),
           petIndex: String(pet.index),
-          workAreaW: String(area.width),
-          workAreaH: String(area.height),
-          workAreaX: String(area.x),
-          workAreaY: String(area.y),
+          workAreaW: String(wr.width),
+          workAreaH: String(wr.height),
+          workAreaX: String(wr.x),
+          workAreaY: String(wr.top),
           // 逐屏工作区（屏幕坐标）+ 主屏下标：渲染端所有边界判定走它们的并集，不走外接矩形。
           // 首帧就要用（position() 定角落），所以走 query；运行期变化再经 pet:displays 推送。
           areas: JSON.stringify(geo.areas),
@@ -665,6 +705,7 @@ app.whenReady().then(() => {
     const bottomPad = Number(b?.bottomPad);
     const vx = Number(b?.vx);
     const vy = Number(b?.vy);
+    setBoundsCount++;
     if (![bx, by, size].every(Number.isFinite) || size <= 0) return;
     const ch = (size * 9) / 16;
     petBodyRects.set(win.id, {
@@ -827,14 +868,16 @@ app.whenReady().then(() => {
   // 表现为「改了分辨率后可移动范围还是旧的」。这里重算并推给所有窗口，渲染端就地重挂。
   let displaysTimer = null;
   const pushDisplays = () => {
-    const geo = deskGeometry();
+    const full = deskGeometry();
+    const wr = petWindowRect();
+    const geo = { ...full, hull: { x: wr.x, y: wr.top, width: wr.width, height: wr.height } };
     lastRequestedBounds.clear(); // 坐标系变了，去重缓存作废，下一帧必须真的重设一次
     for (const win of windows.values()) {
       if (win.isDestroyed()) continue;
       // 桌面几何变化：把"静态大窗口"重挂到新的外接矩形上（这是唯一允许窗口移动的时机）
       try {
         win.setContentBounds(
-          { x: geo.hull.x, y: geo.hull.y, width: geo.hull.width, height: geo.hull.height },
+          { x: wr.x, y: wr.top, width: wr.width, height: wr.height },
           false,
         );
       } catch {}

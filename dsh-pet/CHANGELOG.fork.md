@@ -1139,3 +1139,27 @@ pos=900 → left= 90  屏幕左缘=900  ✅ 居中
 - `petBridge` 正常、无 JS 错误
 
 **已知待验证**：真实桌面下的点击穿透、右键菜单/对话弹窗、多显示器几何变化、多宠物场景。
+
+### 坑 25：macOS 对"超大窗口"的两条硬约束（大窗口架构的两个必须项）
+
+用裸 Electron 逐项对照后发现，macOS 对大窗口有两条约束，缺一就会显示错位/点不到：
+
+| 条件 | 结果 |
+|---|---|
+| 未开 `enableLargerThanScreen` | 4072×982 窗口被压成主屏工作区 `(0,38,1512,895)`，或被挪到 `(1512,-433)` |
+| 开了 `enableLargerThanScreen`，但**原点 y < 0** | 位置被改成 `(2560,-904)` 之类（系统约束帧） |
+| 开了 `enableLargerThanScreen`，原点 y ≥ 0 | **完全保持** ✅ |
+
+**结论（helper 的两个必须项）**：
+
+1. `new BrowserWindow({ ..., enableLargerThanScreen: true })`；
+2. 窗口矩形上边夹到 `y ≥ 0`：`petWindowRect()` 返回
+   `{ x: hull.x, top: Math.max(hull.y,0), width: hull.width, height: hull.y+hull.height-top }`。
+   下发给渲染端的 `hull`（VIEW）必须用这个窗口矩形，否则 `pos` 与窗口原点不一致 →
+   身体矩形整体偏移 → 点击穿透永不翻转（"点不到宠物"）。
+
+**代价**：显示器布局里高于主屏顶边的部分（本机副屏的上方 458 点）不会被窗口覆盖，
+宠物在那条带里不可见。彻底解决需要"每块屏一个窗口"，留作后续。
+
+**诊断**：主进程每 0.5s 把 `{ignore, cursor, body, bounds, hull, setBoundsCount}` 写到
+`~/.dsh/dsh-pet-click-diag-<pid>.json`（用户点不到时无法用右键菜单复制诊断，只能主动落盘）。
