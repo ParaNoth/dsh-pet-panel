@@ -296,6 +296,18 @@ class PetSprite {
     return best;
   }
 
+  /** 点严格落在哪块屏内（不在任何屏里返回 -1；不做"最近"兜底） */
+  displayIndexContaining(cx, cy) {
+    const rects = this.displayRects();
+    for (let i = 0; i < rects.length; i++) {
+      const r = rects[i];
+      const w = r.width ?? r.w ?? 0;
+      const h = r.height ?? r.h ?? 0;
+      if (cx >= r.x && cx <= r.x + w && cy >= r.y && cy <= r.y + h) return i;
+    }
+    return -1;
+  }
+
   /** 把宠物左上角夹进某块屏（窗口宽 = 宠物宽，因此等价于"窗口不骑缝"） */
   clampIntoDisplay(px, py, idx) {
     const rects = this.displayRects();
@@ -337,6 +349,13 @@ class PetSprite {
     // 拖拽期间锁在按下时的归属屏（到边缘顶住，松手弹回本屏）；其余时刻按中心自动归属。
     const rects = this.displayRects();
     if (rects.length) {
+      // 拖拽中：目标中心一旦真正进入另一块屏，就立即把归属切过去 ——
+      // 否则宠物会顶在旧屏边缘一直不动、直到松手才跳过去（观感很怪）。
+      // 用"严格在屏内"判定（不用最近屏兜底），避免在空洞带里来回切换。
+      if (this._ownerLock != null) {
+        const containing = this.displayIndexContaining(px + this.size / 2, py + this.size / 2);
+        if (containing >= 0 && containing !== this._ownerLock) this._ownerLock = containing;
+      }
       const ownerIdx = this._ownerLock != null
         ? this._ownerLock
         : this.displayIndexForCenter(px + this.size / 2, py + this.size / 2);
