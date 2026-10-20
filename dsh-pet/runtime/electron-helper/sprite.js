@@ -42,7 +42,9 @@ class PetSprite {
     // 头顶那段空间现在留给**会话面板**，所以顶部只留"够放面板 + 一点间隙"的高度——面板才能贴近宠物。
     // 左右/下仍用 WINDOW_MARGIN_RATIO（边界漫游与菜单夹取依赖它）。
     const m = this.size * WINDOW_MARGIN_RATIO;
-    this.margin = { t: this.size * PANEL_TOP_MARGIN_RATIO, r: m, b: m, l: m };
+    // 左右 = 0：窗口宽 = 宠物画布宽（骑缝时窗口与宠物同时越界，配合归属屏夹取可彻底避免骑缝）。
+    // 上下保留余量：顶部放会话面板，底部留弹出/落地动画空间。
+    this.margin = { t: this.size * PANEL_TOP_MARGIN_RATIO, r: 0, b: m, l: 0 };
     window.__dshPetDebug.winMargin = this.margin;
     // 宠物包围盒左上角在【工作区】坐标系里的位置（本窗口的位置 = 宠物的位置）
     this.pos = { x: 0, y: 0 };
@@ -262,6 +264,49 @@ class PetSprite {
   // setContentBounds 要**屏幕**坐标：pos 是视口（桌面外接矩形）相对坐标，先加 VIEW.x/y
   // 再统一 ×scale 回物理像素（§3.5 IPC 收口）——主进程收到的数字与线性化旧行为逐位一致，
   // 主进程侧（bounds/去重/碰撞 broker）完全不用改。
+  /** 桌面各屏的矩形（CSS 视口坐标；优先完整屏 PANELS，退化为工作区 AREAS） */
+  displayRects() {
+    return (typeof PANELS !== 'undefined' && PANELS.length ? PANELS : AREAS) || [];
+  }
+
+  /** 点所在的屏下标；不在任何屏里时取最近的一块（找不到返回 -1） */
+  displayIndexForCenter(cx, cy) {
+    const rects = this.displayRects();
+    if (!rects.length) return -1;
+    for (let i = 0; i < rects.length; i++) {
+      const r = rects[i];
+      const w = r.width ?? r.w ?? 0;
+      const h = r.height ?? r.h ?? 0;
+      if (cx >= r.x && cx <= r.x + w && cy >= r.y && cy <= r.y + h) return i;
+    }
+    let best = -1;
+    let bestD = Infinity;
+    for (let i = 0; i < rects.length; i++) {
+      const r = rects[i];
+      const w = r.width ?? r.w ?? 0;
+      const h = r.height ?? r.h ?? 0;
+      const dx = Math.max(r.x - cx, 0, cx - (r.x + w));
+      const dy = Math.max(r.y - cy, 0, cy - (r.y + h));
+      const d = dx * dx + dy * dy;
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  /** 把宠物左上角夹进某块屏（窗口宽 = 宠物宽，因此等价于"窗口不骑缝"） */
+  clampIntoDisplay(px, py, idx) {
+    const rects = this.displayRects();
+    const r = rects[idx];
+    if (!r) return { x: px, y: py };
+    const w = r.width ?? r.w ?? 0;
+    const lo = r.x;
+    const hi = Math.max(lo, r.x + w - this.size);
+    return { x: Math.min(Math.max(px, lo), hi), y: py };
+  }
+
   /** 记录"位置跳变"（相邻两次上报之间位移过大）：用于判断是否是某个轮询/外部事件在挪宠物 */
   notePosJump(px, py) {
     const dbg = window.__dshPetDebug;
@@ -285,6 +330,21 @@ class PetSprite {
   }
 
   sendBounds(px, py) {
+    // ---- 方案 A：归属屏夹取（窗口/宠物永不骑缝）----
+    // 为什么必须夹：macOS+Electron 会把"骑在混合 DPI 屏缝上、且大部分落在 1x 屏"的窗口
+    // 挪到别处（裸 Electron 最小复现：请求 x=1200 → 实际 3760，差 2560 点）。我们每帧再设回来，
+    // 宠物就在两个位置之间闪。窗口宽已 = 宠物画布宽，所以"夹进单屏"同时保证宠物不骑缝。
+    // 拖拽期间锁在按下时的归属屏（到边缘顶住，松手弹回本屏）；其余时刻按中心自动归属。
+    const rects = this.displayRects();
+    if (rects.length) {
+      const ownerIdx = this._ownerLock != null
+        ? this._ownerLock
+        : this.displayIndexForCenter(px + this.size / 2, py + this.size / 2);
+      const c = this.clampIntoDisplay(px, py, ownerIdx);
+      px = c.x;
+      py = c.y;
+    }
+    this.notePosJump(px, py);
     this.pos = { x: Math.round(px), y: Math.round(py) };
     window.__dshPetDebug.dragPos = { x: this.pos.x, y: this.pos.y };
     // 会话面板的贴边方位：这里是一次移动的唯一出口（拖拽/抛掷/漫游/重挂都会经过），
@@ -357,6 +417,7 @@ class PetSprite {
    */
   relayout() {
     this.space = null;
+    this._ownerLock = null;
     if (this.dragState.active || this.throwRef !== null) return;
     this.stopMove();
     const cx = this.pos.x + this.halfW;
@@ -827,6 +888,8 @@ class PetSprite {
         });
       }
     }
+    // 方案 A：按住时锁定归属屏（拖拽期间不再因中心跨屏而切换）
+    this._ownerLock = this.displayIndexForCenter(this.pos.x + this.halfW, this.pos.y + this.halfH);
     this.stopThrow(); // 空中抓取：从当前落点开始新拖拽（this.pos 实时）
     // 刚按下不算"指针停滞"：重置时间戳，避免第一帧光标采样就接管（接管过早会跳一下）
     this._lastPtrMoveAt = performance.now();
@@ -931,6 +994,22 @@ class PetSprite {
     d.dragging = false;
     this.hit.classList.remove('dragging');
     this.stopDragFollow(); // 弹簧跟随立即停（位置定格在实时 this.pos）
+    // 方案 A：松手解除归属锁。只有指针落点**明确越界**（中心已进入另一块屏）才转移归属，
+    // 否则宠物停在边缘（= 弹回本屏的观感）；否则它将永远无法被拖到另一块屏。
+    const ownerLock = this._ownerLock;
+    this._ownerLock = null;
+    let dropPx = null;
+    let dropPy = null;
+    if (wasDragging && e && Number.isFinite(e.screenX) && ownerLock != null) {
+      const rawX = d.petX + (toLocal(e.screenX) - d.sx);
+      const rawY = d.petY + (toLocal(e.screenY) - d.sy);
+      const rawIdx = this.displayIndexForCenter(rawX + this.size / 2, rawY + this.size / 2);
+      if (rawIdx >= 0 && rawIdx !== ownerLock) {
+        const c = this.clampIntoDisplay(rawX, rawY, rawIdx);
+        dropPx = c.x;
+        dropPy = c.y;
+      }
+    }
     if (window.petBridge && window.petBridge.setDragActive) window.petBridge.setDragActive(false);
     this.stage.style.transform = 'translateY(' + this.bottomPad + 'px)';
     this.syncInputBusy(); // 拖拽结束：交还给常规判定（幂等，非拖拽时多调一次不发 IPC）
@@ -958,8 +1037,8 @@ class PetSprite {
       }
       // 释放位置 = 弹簧跟随后的实际包围盒左上角（this.pos 实时；不是指针目标——
       // 跟手滞后时落点跟随宠物实际位置，与浏览器 boxPx 同语义）
-      const px = this.pos.x;
-      const py = this.pos.y;
+      const px = dropPx != null ? dropPx : this.pos.x;
+      const py = dropPy != null ? dropPy : this.pos.y;
       // 初速估算：够快就抛掷（重力+边缘反弹+落地摩擦），否则原地放下
       const vel = S.estimateReleaseVelocity(this.dragTrail, performance.now(), this.physics);
       this.dragTrail = [];

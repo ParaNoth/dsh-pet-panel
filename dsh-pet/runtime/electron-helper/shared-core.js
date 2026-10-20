@@ -684,7 +684,7 @@ const MENU_CSS = [
 	".dsh-pet-menu{position:fixed;left:0;top:0;z-index:2147483000;color:#2b2b2b;font-size:13px;line-height:1.5;",
 	"font-family:'Microsoft YaHei UI','Segoe UI','PingFang SC',sans-serif;user-select:none;pointer-events:auto}",
 	".dsh-pet-menu,.dsh-pet-menu *{box-sizing:border-box}",
-	".dsh-pet-menu-column{position:absolute;min-width:150px;max-width:240px;padding:4px;",
+	".dsh-pet-menu-column{position:absolute;min-width:150px;max-width:min(240px, calc(100vw - 8px));padding:4px;",
 	"background:rgba(255,255,255,.98);border:1px solid rgba(0,0,0,.12);border-radius:8px;",
 	"box-shadow:0 8px 28px rgba(0,0,0,.2);max-height:min(62vh,460px);overflow-y:auto;",
 	"scrollbar-width:thin;scrollbar-color:rgba(0,0,0,.22) transparent}",

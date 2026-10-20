@@ -22,21 +22,27 @@ const STAGE_W = 640;
 
 /**
  * 窗口矩形 → 宠物身体命中区的屏幕矩形（DIP）。
- * 窗口 = 宠物包围盒 + 四周各半只宠物的余量（renderer 的 WINDOW_MARGIN_RATIO = 0.5）：
- * 横向 `margin = round(width / 4)`、stageW = width − 2×margin；纵向从窗口顶边往下 margin 才是画布顶边
- * （底部还多一个 bottomPad，命中区计算用不到）。判定公式与渲染端 sprite.js 的命中判定同源，
- * 故两条通道的判定区域严格一致（报告者补丁里用 width/4 内缩会覆盖整个画布，比身体大一倍多）。
+ *
+ * 当前布局：**左右余量为 0**（窗口宽 = 宠物画布宽，见 main.js 的 petWindowSize），
+ * 顶部保留 0.25×size 余量放会话面板，底部保留 0.5×size 余量给落地动画。
+ * 因此：
+ *   stageW = 窗口宽（画布宽）
+ *   stageH = stageW × CANVAS_H / STAGE_W
+ *   画布顶 = 窗口顶 + 0.25 × stageW
+ *
+ * （旧布局左右各 0.5×size 余量时这里用 `margin = width/4` 内缩；余量归零后必须同步，
+ *   否则命中区会整体右移且只剩一半宽 —— 表现为"看得到、点不到"。）
  */
 function spriteHitRect(bounds) {
-  const margin = Math.round(bounds.width / 4);
-  const stageW = bounds.width - margin * 2;
-  const stageH = (stageW * CANVAS_H) / STAGE_W;
-  return {
-    left: bounds.x + margin + (HIT_BOX.x0 / STAGE_W) * stageW,
-    top: bounds.y + margin + (HIT_BOX.y0 / CANVAS_H) * stageH,
-    right: bounds.x + margin + (HIT_BOX.x1 / STAGE_W) * stageW,
-    bottom: bounds.y + margin + (HIT_BOX.y1 / CANVAS_H) * stageH,
-  };
+	const stageW = bounds.width;
+	const stageH = (stageW * CANVAS_H) / STAGE_W;
+	const topPad = Math.round(stageW * 0.25);
+	return {
+		left: bounds.x + (HIT_BOX.x0 / STAGE_W) * stageW,
+		top: bounds.y + topPad + (HIT_BOX.y0 / CANVAS_H) * stageH,
+		right: bounds.x + (HIT_BOX.x1 / STAGE_W) * stageW,
+		bottom: bounds.y + topPad + (HIT_BOX.y1 / CANVAS_H) * stageH,
+	};
 }
 
 /** 判定轮询间隔（ms，与 issue #55 报告者实测值一致） */

@@ -340,7 +340,10 @@ function petWindowSize(size) {
   // 顶部余量比其它三边小（渲染端 PANEL_TOP_MARGIN_RATIO 同值）：气泡已关，头顶空间留给会话面板，
   // 面板因此能贴近宠物头部。**两处必须一致**，否则首帧会因窗口高度不符而跳动。
   const top = Math.round(size * 0.25);
-  return { width: Math.round(size) + m * 2, height: Math.round(height + bottomPad) + m + top };
+  // 左右余量 = 0（窗口宽 = 宠物画布宽）：窗口越窄越不容易骑到屏缝上。
+  // macOS 会把"骑在混合 DPI 屏缝上且大部分落在 1x 屏"的窗口挪到别处（实测 +2560 点），
+  // 表现为宠物在拖动位置与弹回位置之间闪烁。窗口宽 = 画布宽后，窗口骑缝 ⟺ 宠物骑缝。
+  return { width: Math.round(size), height: Math.round(height + bottomPad) + m + top };
 }
 
 /**
