@@ -517,8 +517,9 @@ function createPetWindows() {
         setWindowIgnore(win, next);
       }
     }, POINTER_POLL_MS);
-    // 排障：点击链路状态落盘（用户点不到时无法用右键菜单复制诊断，只能由主进程主动写）
-    const diagTimer = setInterval(() => {
+    // 排障（默认关闭）：点击链路状态落盘。用户点不到时无法用右键菜单复制诊断，只能由主进程主动写。
+    // 需要时设 DSH_PET_CLICK_DIAG=1 启动；平时不写盘。
+    const diagTimer = process.env.DSH_PET_CLICK_DIAG === '1' ? setInterval(() => {
       if (win.isDestroyed()) return;
       try {
         const body = petBodyRects.get(win.id) || null;
@@ -535,9 +536,9 @@ function createPetWindows() {
         };
         writeFileSync(path.join(os.homedir(), '.dsh', 'dsh-pet-click-diag-' + process.pid + '.json'), JSON.stringify(data, null, 1));
       } catch {}
-    }, 500);
+    }, 500) : null;
     win.on('closed', () => {
-      clearInterval(diagTimer);
+      if (diagTimer) clearInterval(diagTimer);
       clearInterval(pointerTimer);
       windows.delete(pet.id);
       lastRequestedBounds.delete(win.id);
