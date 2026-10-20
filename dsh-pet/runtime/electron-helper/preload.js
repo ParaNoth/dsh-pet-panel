@@ -50,6 +50,10 @@ contextBridge.exposeInMainWorld('petBridge', {
   setDragActive(active) {
     ipcRenderer.send('pet:drag-active', !!active);
   },
+  /** 订阅「窗口实际位置 ≠ 请求位置」的上报（跨屏时系统干预的证据） */
+  onBoundsMismatch(cb) {
+    ipcRenderer.on('pet:bounds-mismatch', (e, info) => cb(info));
+  },
   /** 订阅主进程喂来的系统光标位置 {x,y}（DIP，与 pointer 事件的 screenX/Y 同单位） */
   onCursor(cb) {
     ipcRenderer.on('pet:cursor', (e, p) => cb(p));

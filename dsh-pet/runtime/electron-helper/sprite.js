@@ -203,6 +203,11 @@ class PetSprite {
     this.lastFlightReport = 0;
     // 拖拽兜底驱动：主进程按帧喂系统光标位置。pointermove 绑在命中区上，窗口移动后指针
     // 很容易离开命中区 → 事件停 → 拖拽定格（实测只走 1/3 位移）。光标位置与命中区无关。
+    if (window.petBridge && window.petBridge.onBoundsMismatch) {
+      window.petBridge.onBoundsMismatch((info) => {
+        window.__dshPetDebug.boundsMismatch = info; // 只保留最近一次（含 req/act/dx/dy）
+      });
+    }
     if (window.petBridge && window.petBridge.onCursor) {
       window.petBridge.onCursor((p) => this.onCursorSample(p));
     }

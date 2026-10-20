@@ -270,9 +270,10 @@ class SessionsPanel {
         win: { w: window.innerWidth, h: window.innerHeight },
         lastDragRaw: window.__dshPetDebug.lastDragRaw,
         lastThrow: window.__dshPetDebug.lastThrow,
+        boundsMismatch: window.__dshPetDebug.boundsMismatch || null,
         panelTrace: this._trace ? this._trace.slice(-40) : null,
         // 运行版本身份（每次改渲染端逻辑时 +1）：确认页面加载的是磁盘上的当前版本
-        rev: 'r7',
+        rev: 'r8',
         // 运行版本身份：新版（并集 x）的 minX = −sideAllow；旧版（逐屏内缩）= 屏左 − sideAllow。
         // 一眼就能确认"跑的是不是刚部署的那版"（踩过：文件已更新但 helper 没重启）。
         bounds: (() => {
@@ -546,8 +547,15 @@ class SessionsPanel {
     this._trace = this._trace || [];
     const areaKey = wa ? Math.round(wa.x) + ',' + Math.round(wa.y) : '?';
     const lastTr = this._trace[this._trace.length - 1];
-    if (!lastTr || lastTr.area !== areaKey || lastTr.left !== this._appliedLeft || lastTr.top !== topPx) {
+    // xc = 窗口当前与几块屏相交（>1 表示窗口确实横跨了屏缝；用来验证"跨屏"假设）
+    let xc = 0;
+    for (const p of (typeof PANELS !== 'undefined' ? PANELS : [])) {
+      const pw = rectSize(p), ph = rectSize(p, 'h');
+      if (winLocalL < p.x + pw && winLocalL + winW > p.x && winLocalT < p.y + ph && winLocalT + winH > p.y) xc++;
+    }
+    if (!lastTr || lastTr.area !== areaKey || lastTr.left !== this._appliedLeft || lastTr.top !== topPx || lastTr.xc !== xc) {
       this._trace.push({
+        xc,
         t: Math.round(nowMs),
         px: Math.round(sprite.pos.x),
         py: Math.round(sprite.pos.y),

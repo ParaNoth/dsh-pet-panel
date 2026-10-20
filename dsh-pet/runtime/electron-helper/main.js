@@ -653,6 +653,22 @@ app.whenReady().then(() => {
     if (lastRequestedBounds.get(win.id) !== key) {
       lastRequestedBounds.set(win.id, key);
       win.setContentBounds(rect, false);
+      // 诊断：请求后回读实际位置。跨屏时若系统（Space 归属/边界钳制）挪动了窗口，
+      // 这里会出现**大偏差**（>8 DIP）；正常情况只有 DIP↔物理 取整的 1~2px 误差。
+      // 用 40ms / 150ms 两次采样，取偏差更大的一次上报给渲染端。
+      for (const delay of [40, 150]) {
+        setTimeout(() => {
+          if (win.isDestroyed()) return;
+          const act = win.getContentBounds();
+          const dx = act.x - rect.x;
+          const dy = act.y - rect.y;
+          const dw = act.width - rect.width;
+          const dh = act.height - rect.height;
+          if (Math.abs(dx) > 8 || Math.abs(dy) > 8 || Math.abs(dw) > 8 || Math.abs(dh) > 8) {
+            win.webContents.send('pet:bounds-mismatch', { req: rect, act, dx, dy, dw, dh, at: Date.now() });
+          }
+        }, delay);
+      }
     }
     // 碰撞站场：位置必须用**包围盒左上角**（renderer 显式上报 boxX/boxY）——
     // 窗口坐标 = 包围盒 − margin（半只宠物宽），直接拿窗口坐标会让跨窗检测整体错位
