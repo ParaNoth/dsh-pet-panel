@@ -1234,13 +1234,21 @@ const throwStepRegion = (s, dtRaw, space, physics = DEFAULT_PHYSICS) => {
 		atRest: false
 	};
 	const h = space.size * 9 / 16;
-	// ---- 规则一：宠物**中心**必须落在某块屏上 ----
-	// x 用并集之后就可能在"两块屏之间的竖向缝隙"里滑动；这里每帧把中心夹回最近一块屏，
-	// 保证宠物任何时候都至少在一处可见（不要求在两边同时显示，画布可以越界）。
+	// ---- 规则一：宠物**身体**至少要有一部分落在某块屏上 ----
+	// 原本要求"中心在屏内"，结果在屏缝上方的空洞区（主屏工作区还没开始、副屏在右侧）里，
+	// 身体明明有一半在副屏上可见，却被物理夹回最近的屏 —— 表现就是"拖进去被闪出来"。
+	// 改为"身体与任一块面板有重叠即可"，只有**完全**落在空洞里才夹回最近屏。
 	{
+		const bodyL = x;
+		const bodyR = x + space.size;
+		const bodyT = y;
+		const bodyB = y + h;
+		const anyVisible = space.panels.some(
+			(p) => bodyL < rectRight(p) && bodyR > p.x && bodyT < rectBottom(p) && bodyB > p.y,
+		);
 		const ccx = x + space.size / 2;
 		const ccy = y + h / 2;
-		if (indexAtPoint(space.panels, ccx, ccy) < 0) {
+		if (!anyVisible) {
 			const ni = nearestIndex(space.panels, ccx, ccy);
 			if (ni >= 0) {
 				const p = space.panels[ni];
