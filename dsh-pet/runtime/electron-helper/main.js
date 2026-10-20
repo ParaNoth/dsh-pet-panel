@@ -470,8 +470,14 @@ function createPetWindows() {
       const body = petBodyRects.get(win.id);
       if (!body) return; // 首帧上报前
       const ignoring = windowIgnore.get(win.id) !== false;
-      const next = decideWindowIgnore(body, screen.getCursorScreenPoint(), ignoring, inputBusy.get(win.id) === true);
-      if (next !== ignoring) setWindowIgnore(win, next);
+      const pt = screen.getCursorScreenPoint();
+      const next = decideWindowIgnore(body, pt, ignoring, inputBusy.get(win.id) === true);
+      if (next !== ignoring) {
+        // 排障：穿透状态翻转时记录光标与身体矩形（点的对不上就是这里的问题）
+        console.error('[dsh-pet] ignore=' + next + ' cursor=' + pt.x + ',' + pt.y +
+          ' body=' + Math.round(body.x) + ',' + Math.round(body.y) + ',' + Math.round(body.width) + 'x' + Math.round(body.height));
+        setWindowIgnore(win, next);
+      }
     }, POINTER_POLL_MS);
     win.on('closed', () => {
       clearInterval(pointerTimer);
