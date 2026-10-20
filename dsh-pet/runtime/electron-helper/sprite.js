@@ -319,6 +319,32 @@ class PetSprite {
     return { x: Math.min(Math.max(px, lo), hi), y: py };
   }
 
+  /** 跨屏搬家前抓一份"与视口无关"的状态（目前只有抛掷状态用视口坐标） */
+  captureFrame() {
+    if (!this.throwState) return null;
+    const st = this.throwState;
+    return {
+      throwAbs: {
+        x: (st.x + VIEW.x) * CONFIG.scale,
+        y: (st.y + VIEW.y) * CONFIG.scale,
+        vx: st.vx,
+        vy: st.vy,
+      },
+    };
+  }
+
+  /** 搬家后按新 VIEW 还原抛掷状态（速度在新旧 VIEW 间不变） */
+  rebaseFrame(snap) {
+    if (!snap || !snap.throwAbs || !this.throwState) return;
+    const a = snap.throwAbs;
+    this.throwState = {
+      x: a.x / CONFIG.scale - VIEW.x,
+      y: a.y / CONFIG.scale - VIEW.y,
+      vx: a.vx,
+      vy: a.vy,
+    };
+  }
+
   /** 宠物左上角的**全局屏幕点**坐标（points）：(pos + VIEW) × scale */
   screenPoint() {
     return { x: (this.pos.x + VIEW.x) * CONFIG.scale, y: (this.pos.y + VIEW.y) * CONFIG.scale };
@@ -662,7 +688,19 @@ class PetSprite {
       areas: AREAS,
     });
     if (!plan) return false;
-    this.pendingMove = { ...plan, dir, leadSec: mp.leadSec, tailSec: mp.tailSec };
+    // 漫游目标换算成**绝对屏幕点**：窗口跨屏搬家后 VIEW 会变，若按视口比例插值，
+    // 宠物会被映射到新屏的错误位置（实测"跨屏后刷在副屏最左边"）。
+    const startAbs = this.screenPoint();
+    const endViewX = plan.targetRatio * W - this.halfW;
+    const endViewY = plan.startYRatio * H - this.halfH;
+    this.pendingMove = {
+      ...plan,
+      dir,
+      leadSec: mp.leadSec,
+      tailSec: mp.tailSec,
+      absStart: startAbs,
+      absEnd: { x: (endViewX + VIEW.x) * CONFIG.scale, y: (endViewY + VIEW.y) * CONFIG.scale },
+    };
     this.anim = chosen.name;
     this.once = true;
     this.switchTo(chosen.name, true);
@@ -673,26 +711,23 @@ class PetSprite {
     const pm = this.pendingMove;
     if (!pm || this.moveRef !== null) return;
     this.pendingMove = null;
-    const { startRatio, startYRatio, targetRatio, dir, totalRatio, leadSec, tailSec } = pm;
+    const { leadSec, tailSec, absStart, absEnd } = pm;
     const duration = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 10.09;
     const travelWindow = Math.max(0.1, duration - leadSec - tailSec);
     const token = ++this.moveToken;
-    const W = VIEW.w;
-    const H = VIEW.h;
     const step = () => {
       if (this.moveToken !== token) return;
       const t = el.currentTime || 0;
-      let ratioX;
-      if (t <= leadSec) ratioX = startRatio;
-      else if (t >= duration - tailSec) ratioX = targetRatio;
-      else ratioX = startRatio + dir * totalRatio * ((t - leadSec) / travelWindow);
-      // 移动的是窗口（宠物包围盒跟随），sprite 在本窗口内不动
-      this.sendBounds(ratioX * W - this.halfW, startYRatio * H - this.halfH);
+      // 进度 0..1：在**绝对屏幕点**之间插值（跨屏搬家后依然沿同一条屏幕轨迹走）
+      const k = t <= leadSec ? 0 : t >= duration - tailSec ? 1 : Math.min(1, Math.max(0, (t - leadSec) / travelWindow));
+      const absX = absStart.x + (absEnd.x - absStart.x) * k;
+      const absY = absStart.y + (absEnd.y - absStart.y) * k;
+      this.sendBounds(absX / CONFIG.scale - VIEW.x, absY / CONFIG.scale - VIEW.y);
       if (t < duration - tailSec) {
         this.moveRef = requestAnimationFrame(step);
       } else {
         this.moveRef = null;
-        this.customPos = { rx: targetRatio, ry: startYRatio };
+        this.customPos = { rx: (this.pos.x + this.halfW) / VIEW.w, ry: (this.pos.y + this.halfH) / VIEW.h };
       }
     };
     this.moveRef = requestAnimationFrame(step);

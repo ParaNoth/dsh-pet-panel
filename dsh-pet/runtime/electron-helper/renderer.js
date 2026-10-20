@@ -126,15 +126,19 @@ if (window.petBridge && window.petBridge.onDisplays) {
     // 主进程可能把**整个窗口搬到另一块显示器**（窗口 = 当前所在屏，Codex 同款模型）。
     // 搬家时它会带 anchor = 宠物包围盒的绝对屏幕点；应用新 VIEW 后按 anchor 重新落位，
     // 保证宠物在屏幕上的位置不变（不能靠这里自己记录：窗口 resize 事件会先把位置重置）。
+    // 先抓"与视口无关"的状态（抛掷的坐标是视口坐标，搬家后要换算）
+    const snaps = sprites.map((sp) => (sp && typeof sp.captureFrame === 'function' ? sp.captureFrame() : null));
     if (!applyDeskGeometry(geo)) return;
     const anchor = geo && geo.anchor;
-    for (const s of sprites) {
+    for (let i = 0; i < sprites.length; i++) {
+      const s = sprites[i];
       if (!s) continue;
       if (anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y) && typeof s.placeAtScreen === 'function') {
         s.placeAtScreen(anchor);
       } else {
         s.relayout();
       }
+      if (snaps[i] && typeof s.rebaseFrame === 'function') s.rebaseFrame(snaps[i]);
     }
   });
 }
