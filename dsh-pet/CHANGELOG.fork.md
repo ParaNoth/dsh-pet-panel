@@ -1242,16 +1242,22 @@ pos=900 → left= 90  屏幕左缘=900  ✅ 居中
 | 单个跨屏大窗口 | 「显示器独立 Space」下只被合成到一块屏（红色测试：只覆盖副屏下半段）→ 宠物不可见 |
 | **窗口 = 当前屏** | 不跨屏、不逐帧移动 → 稳定 ✅ |
 
-### 关键不变式
+### 关键不变式（四条移动路径全部使用绝对屏幕坐标）
 
-1. **窗口永远等于一块显示器**：原点/尺寸都取 `screen.getDisplayNearestPoint` 的 bounds；
-   不需要 `enableLargerThanScreen` 走负坐标（保留该选项无副作用）。
-2. **拖动基准 = 绝对屏幕坐标**：`pressX/pressY`（指针屏幕点）+ `absX/absY`（宠物画布绝对点）
-   → `targetAbs`；`dragTarget = targetAbs / scale − VIEW`（每次用当前 VIEW 换算）。
-   窗口搬家后必须用 `targetAbs` 重算 `dragTarget`。
-3. **窗口 resize 事件不做任何位置重置**（曾经的 `position()` / 延迟 `relayout()` 会把宠物拉回
-   `customPos`，导致"搬过去又跳回/来回搬屏"）。
-4. 换屏静默期 700ms：搬家瞬间渲染端若上报旧绝对位置，不得立刻触发反向搬家。
+| 路径 | 状态表示 | 跨屏时 |
+|---|---|---|
+| **拖动** | `pressX/pressY` + `absX/absY` → `targetAbs` | 搬家后用 `targetAbs` 重算 `dragTarget` |
+| **漫游** | `pendingMove.absStart/absEnd` | 在绝对点之间插值，每帧按当前 VIEW 换算 |
+| **抛掷** | `throwState`（视口） | 搬家前后 `captureFrame/rebaseFrame`（绝对点往返） |
+| **窗口** | 位置/尺寸 = 当前显示器 bounds | 主进程整窗搬家 + 下发 anchor |
+
+补充规则：
+
+1. 窗口永远等于一块显示器（`screen.getDisplayNearestPoint` 的 bounds），不跨屏。
+2. 窗口 **resize 事件不做任何位置重置**（曾经 `position()` / 延迟 `relayout()` 会把宠物拉回
+   `customPos` → "搬过去又跳回 / 来回搬屏"）。
+3. 换屏静默期 700ms：搬家瞬间渲染端若上报旧绝对位置，不得立刻触发反向搬家。
+4. 任何新增的"移动宠物"的代码都必须用**绝对屏幕坐标**做状态；视口坐标只能用于"当前这一刻的渲染"。
 
 ### 排障开关（默认全关）
 
