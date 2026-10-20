@@ -23,7 +23,6 @@ contextBridge.exposeInMainWorld('petBridge', {
   setBounds(boxX, boxY, size, bottomPad, vx, vy) {
     ipcRenderer.send('pet:set-bounds', { boxX, boxY, size, bottomPad, vx, vy });
   },
-,
   setInteractive(interactive) {
     ipcRenderer.send('pet:set-interactive', !!interactive);
   },
