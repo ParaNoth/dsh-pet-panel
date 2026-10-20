@@ -271,9 +271,11 @@ class SessionsPanel {
         lastDragRaw: window.__dshPetDebug.lastDragRaw,
         lastThrow: window.__dshPetDebug.lastThrow,
         boundsMismatch: window.__dshPetDebug.boundsMismatch || null,
+        posJumps: window.__dshPetDebug.posJumps || null,
+        polls: window.__dshPetDebug.polls || null,
         panelTrace: this._trace ? this._trace.slice(-40) : null,
         // 运行版本身份（每次改渲染端逻辑时 +1）：确认页面加载的是磁盘上的当前版本
-        rev: 'r8',
+        rev: 'r9',
         // 运行版本身份：新版（并集 x）的 minX = −sideAllow；旧版（逐屏内缩）= 屏左 − sideAllow。
         // 一眼就能确认"跑的是不是刚部署的那版"（踩过：文件已更新但 helper 没重启）。
         bounds: (() => {
@@ -289,8 +291,26 @@ class SessionsPanel {
         scale: CONFIG.scale,
       };
     };
-    this.timer = window.setInterval(() => void this.refresh(), SESSIONS_POLL_MS);
-    this.balanceTimer = window.setInterval(() => void this.refreshBalance(), BALANCE_POLL_MS);
+    // 排障：记录各轮询触发时刻（与 posJumps 对时间，可判断跳变是否与某个轮询同频）
+    window.__dshPetDebug = window.__dshPetDebug || {};
+    window.__dshPetDebug.polls = window.__dshPetDebug.polls || { sessions: [], balance: [] };
+    const markPoll = (kind) => {
+      const arr = window.__dshPetDebug.polls[kind];
+      arr.push(Math.round(performance.now()));
+      if (arr.length > 8) arr.shift();
+    };
+    this.timer = window.setInterval(() => {
+      markPoll('sessions');
+      void this.refresh();
+    }, SESSIONS_POLL_MS);
+    this.balanceTimer = window.setInterval(() => {
+      if (window.__dshPetDebug && window.__dshPetDebug.polls) {
+        const a = window.__dshPetDebug.polls.balance;
+        a.push(Math.round(performance.now()));
+        if (a.length > 8) a.shift();
+      }
+      void this.refreshBalance();
+    }, BALANCE_POLL_MS);
     return this;
   }
 

@@ -262,6 +262,28 @@ class PetSprite {
   // setContentBounds 要**屏幕**坐标：pos 是视口（桌面外接矩形）相对坐标，先加 VIEW.x/y
   // 再统一 ×scale 回物理像素（§3.5 IPC 收口）——主进程收到的数字与线性化旧行为逐位一致，
   // 主进程侧（bounds/去重/碰撞 broker）完全不用改。
+  /** 记录"位置跳变"（相邻两次上报之间位移过大）：用于判断是否是某个轮询/外部事件在挪宠物 */
+  notePosJump(px, py) {
+    const dbg = window.__dshPetDebug;
+    if (!dbg) return;
+    dbg.posJumps = dbg.posJumps || [];
+    const prev = dbg._lastPos;
+    dbg._lastPos = { x: px, y: py };
+    if (!prev) return;
+    const dx = px - prev.x;
+    const dy = py - prev.y;
+    if (Math.hypot(dx, dy) < 60) return; // 正常拖拽单帧也可能大，用 60 过滤小抖动
+    dbg.posJumps.push({
+      t: Math.round(performance.now()),
+      dx: Math.round(dx),
+      dy: Math.round(dy),
+      x: Math.round(px),
+      y: Math.round(py),
+      dragging: Boolean(this.dragState && this.dragState.active),
+    });
+    if (dbg.posJumps.length > 30) dbg.posJumps.shift();
+  }
+
   sendBounds(px, py) {
     this.pos = { x: Math.round(px), y: Math.round(py) };
     window.__dshPetDebug.dragPos = { x: this.pos.x, y: this.pos.y };
