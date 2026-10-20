@@ -270,6 +270,7 @@ class SessionsPanel {
         win: { w: window.innerWidth, h: window.innerHeight },
         lastDragRaw: window.__dshPetDebug.lastDragRaw,
         lastThrow: window.__dshPetDebug.lastThrow,
+        panelTrace: this._trace ? this._trace.slice(-40) : null,
         // 运行版本身份（每次改渲染端逻辑时 +1）：确认页面加载的是磁盘上的当前版本
         rev: 'r5',
         // 运行版本身份：新版（并集 x）的 minX = −sideAllow；旧版（逐屏内缩）= 屏左 − sideAllow。
@@ -540,7 +541,25 @@ class SessionsPanel {
 
     // 竖直方向同理：理想位置是窗口顶部那 4px，越界时往下让（贴着工作区上缘）
     const minTop = Math.max(winLocalT, boundT) + EDGE_PAD;
-    this.el.style.setProperty('--sess-panel-top', Math.round(minTop - winLocalT) + 'px');
+    const topPx = Math.round(minTop - winLocalT);
+    // 轨迹（排障）：left 或 top 或参考屏变化时留一条 —— 一次复制快照就能看出在哪些值之间跳
+    this._trace = this._trace || [];
+    const areaKey = wa ? Math.round(wa.x) + ',' + Math.round(wa.y) : '?';
+    const lastTr = this._trace[this._trace.length - 1];
+    if (!lastTr || lastTr.area !== areaKey || lastTr.left !== this._appliedLeft || lastTr.top !== topPx) {
+      this._trace.push({
+        t: Math.round(nowMs),
+        px: Math.round(sprite.pos.x),
+        py: Math.round(sprite.pos.y),
+        area: areaKey,
+        left: this._appliedLeft,
+        top: topPx,
+        winL: Math.round(winLocalL),
+        winT: Math.round(winLocalT),
+      });
+      if (this._trace.length > 80) this._trace.shift();
+    }
+    this.el.style.setProperty('--sess-panel-top', topPx + 'px');
     const roomH = boundB - minTop - EDGE_PAD;
     if (Number.isFinite(roomH)) {
       this.el.style.setProperty('--sess-avail-h', Math.round(Math.max(0, roomH)) + 'px');
