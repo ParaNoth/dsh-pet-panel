@@ -272,7 +272,7 @@ class SessionsPanel {
         lastThrow: window.__dshPetDebug.lastThrow,
         panelTrace: this._trace ? this._trace.slice(-40) : null,
         // 运行版本身份（每次改渲染端逻辑时 +1）：确认页面加载的是磁盘上的当前版本
-        rev: 'r5',
+        rev: 'r6',
         // 运行版本身份：新版（并集 x）的 minX = −sideAllow；旧版（逐屏内缩）= 屏左 − sideAllow。
         // 一眼就能确认"跑的是不是刚部署的那版"（踩过：文件已更新但 helper 没重启）。
         bounds: (() => {
