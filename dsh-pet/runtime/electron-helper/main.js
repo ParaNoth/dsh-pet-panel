@@ -46,6 +46,13 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 // "Electron"，userData 便落到 %APPDATA%\Electron —— 那是所有这么跑的 Electron 脚本的公共目录，
 // 我们的 DPI 缓存与 Chromium profile 都会和别人混在一起。必须赶在任何 getPath('userData') 之前设。
 app.setName('dsh-pet-electron-helper');
+// 排障开关（默认关闭）：若存在 ~/.dsh/dsh-pet-debug-port 且内容是端口号，则给 helper 开远程调试。
+// 用途：宠物窗口是独立 Electron 进程，主窗口的调试器看不到它；排查"窗口在但内容不渲染/命中判定"
+// 这类问题时，需要直接检查它自己的 renderer。删除该文件即恢复默认。
+try {
+  const dbgPort = readFileSync(path.join(os.homedir(), '.dsh', 'dsh-pet-debug-port'), 'utf8').trim();
+  if (/^\d+$/.test(dbgPort)) app.commandLine.appendSwitch('remote-debugging-port', dbgPort);
+} catch {}
 
 /** DPI 探测子进程模式：不建窗口，只把主屏 scaleFactor 打到 stdout 就退出（见 probePrimaryScale） */
 const DPI_PROBE = process.env.DSH_PET_DPI_PROBE === '1';
