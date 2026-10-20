@@ -319,6 +319,21 @@ class PetSprite {
     return { x: Math.min(Math.max(px, lo), hi), y: py };
   }
 
+  /** 宠物左上角的**全局屏幕点**坐标（points）：(pos + VIEW) × scale */
+  screenPoint() {
+    return { x: (this.pos.x + VIEW.x) * CONFIG.scale, y: (this.pos.y + VIEW.y) * CONFIG.scale };
+  }
+
+  /** 窗口被搬到另一块屏后，用全局屏幕点重新落位（保持宠物在屏幕上的绝对位置不变） */
+  placeAtScreen(pt) {
+    if (!pt || !Number.isFinite(pt.x) || !Number.isFinite(pt.y)) return;
+    this.pos = {
+      x: Math.round(pt.x / CONFIG.scale - VIEW.x),
+      y: Math.round(pt.y / CONFIG.scale - VIEW.y),
+    };
+    this.sendBounds(this.pos.x, this.pos.y);
+  }
+
   /** 记录"位置跳变"（相邻两次上报之间位移过大）：用于判断是否是某个轮询/外部事件在挪宠物 */
   notePosJump(px, py) {
     const dbg = window.__dshPetDebug;
@@ -347,13 +362,9 @@ class PetSprite {
     // 因此没有"窗口跨屏"这回事：拖拽/抛掷/漫游全程同一个窗口、同一套视口坐标，
     // 跨屏自然连续，也不再有窗口被系统挪走导致的闪烁（见坑 23/24）。
     //
-    // 窗口可能比整个桌面矮（macOS 不允许原点为负的超大窗口，窗口上边被夹到 y≥0），
-    // 因此先把宠物夹在**窗口可见范围**内，避免落到窗口外看不见。
-    const winW = window.innerWidth;
-    const winH = window.innerHeight;
-    const petH = Number(this.height) || this.size * 9 / 16;
-    px = Math.min(Math.max(px, 0), Math.max(0, winW - this.size));
-    py = Math.min(Math.max(py, 0), Math.max(0, winH - petH));
+    // 注意：这里**不夹窗口边界**。窗口 = 宠物当前所在显示器，当位置越出本屏时，
+    // 主进程会按"宠物中心在哪块屏"把整个窗口搬到那块屏（Codex 同款模型），
+    // 随后经 pet:displays 让渲染端按全局屏幕点重新落位。若在这里夹取，跨屏就永远触发不了。
     // 唯一兜底：别让宠物落进"不属于任何屏幕的空洞"（多屏拼外接矩形时存在），否则完全看不见。
     // 判据用宠物中心：中心不在任何屏内就夹回最近那块屏（水平+垂直都夹）。
     const cx0 = px + this.size / 2;

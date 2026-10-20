@@ -401,21 +401,31 @@ function deskGeometry() {
 }
 
 /**
- * 窗口矩形 = 桌面外接矩形，但上边夹到 **y ≥ 0**。
+ * 窗口矩形 = **宠物当前所在的那块显示器**（屏幕点坐标）。
  *
- * macOS 实测约束：原点 y 为负的超大窗口会被系统挪走（请求 (0,-433) 4072×1415 → 实际 (2560,-904)），
- * 而原点 (0,0) 的超大窗口可以完美保持（已用裸 Electron 验证）。因此窗口上边取 max(hull.y, 0)。
- * 代价：副屏高出主屏的那一条（hull.y<0 的部分）暂不被窗口覆盖，宠物在那条带里不可见/不可达。
+ * 这是 Codex/ChatGPT 桌面版验证过的模型（实测其宠物层窗口随宠物移动在
+ * `(0,0,1512,982)` 与 `(1512,-458,2560,1440)` 之间整体切换）。好处：
+ *   * 窗口永远等于"一块屏"，不跨屏 → 不受 macOS「独立 Space 不允许跨屏窗口」约束；
+ *   * 宠物在窗口内移动、窗口不动 → 拖拽/漫游没有窗口抖动；
+ *   * 跨屏只在"中心进入另一块屏"时发生一次整窗搬家。
  */
-function petWindowRect() {
-  const hull = deskGeometry().hull;
-  const top = Math.max(hull.y, 0);
-  return { x: hull.x, top, width: hull.width, height: Math.max(0, hull.y + hull.height - top) };
+function displayRectFor(point) {
+  const d = screen.getDisplayNearestPoint({ x: Math.round(point.x), y: Math.round(point.y) });
+  const b = d.bounds;
+  return { x: b.x, y: b.y, width: b.width, height: b.height, id: d.id };
 }
+
+/** 主进程侧记录：win.id → 当前承载的显示器 id（跨屏搬家后更新） */
+const winDisplayId = new Map();
+/** win.id -> 静默截止时间（ms）：刚搬完屏的这段时间内忽略 set-bounds 触发的再次换屏。
+ * 原因：窗口 resize 会让渲染端把位置重置回 customPos 并上报一次，那一帧的绝对位置是旧的，
+ * 会立刻触发反向搬屏（实测 1→2 后马上 2→1，来回跳）。 */
+const winSwitchGuard = new Map();
 
 function createPetWindows() {
   const geo = deskGeometry();
-  const wr = petWindowRect();
+  const primary = screen.getPrimaryDisplay();
+  const wr = { x: primary.bounds.x, y: primary.bounds.y, width: primary.bounds.width, height: primary.bounds.height };
   const configUrl = process.env.DSH_PET_CONFIG_URL || 'http://127.0.0.1:3080/dsh-pet-7340/config';
   const pets = petsFromEnv();
   const scale = petScale();
@@ -430,7 +440,7 @@ function createPetWindows() {
       width,
       height,
       x: wr.x,
-      y: wr.top,
+      y: wr.y,
       show: false,
       useContentSize: true,
       transparent: true,
@@ -456,6 +466,7 @@ function createPetWindows() {
         spellcheck: false,
       },
     });
+    winDisplayId.set(win.id, primary.id);
     win.setAlwaysOnTop(true, 'screen-saver');
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     // 窗口被其他窗口（另一只宠物）完全遮挡时，Chromium 默认会暂停本窗口渲染，
@@ -520,7 +531,7 @@ function createPetWindows() {
           visible: win.isVisible(),
           busy: inputBusy.get(win.id) === true,
           setBoundsCount,
-          hull: { x: petWindowRect().x, y: petWindowRect().top, width: petWindowRect().width, height: petWindowRect().height },
+          hull: win.getBounds(),
         };
         writeFileSync(path.join(os.homedir(), '.dsh', 'dsh-pet-click-diag-' + process.pid + '.json'), JSON.stringify(data, null, 1));
       } catch {}
@@ -543,7 +554,7 @@ function createPetWindows() {
           workAreaW: String(wr.width),
           workAreaH: String(wr.height),
           workAreaX: String(wr.x),
-          workAreaY: String(wr.top),
+          workAreaY: String(wr.y),
           // 逐屏工作区（屏幕坐标）+ 主屏下标：渲染端所有边界判定走它们的并集，不走外接矩形。
           // 首帧就要用（position() 定角落），所以走 query；运行期变化再经 pet:displays 推送。
           areas: JSON.stringify(geo.areas),
@@ -721,6 +732,32 @@ app.whenReady().then(() => {
       width: ((440 - 200) / 640) * size,
       height: ((335 - 50) / 360) * ch,
     });
+    // ---- 跨屏：宠物中心进入另一块显示器时，把整个窗口搬到那块屏 ----
+    // 与 Codex/ChatGPT 宠物层一致（它们的窗口会在两块屏之间整体切换）。
+    // 窗口永远等于一块屏 ⇒ 不跨屏 ⇒ 不触发 macOS「独立 Space 拒绝跨屏窗口」。
+    try {
+      const chFull = (size * 9) / 16;
+      const center = { x: bx + size / 2, y: by + chFull * 0.55 };
+      const d = screen.getDisplayNearestPoint({ x: Math.round(center.x), y: Math.round(center.y) });
+      const guardUntil = winSwitchGuard.get(win.id) || 0;
+      if (winDisplayId.get(win.id) !== d.id && Date.now() >= guardUntil) {
+        console.error('[dsh-pet] display switch ' + winDisplayId.get(win.id) + ' -> ' + d.id + ' center=' + Math.round(center.x) + ',' + Math.round(center.y));
+        winSwitchGuard.set(win.id, Date.now() + 700);
+        winDisplayId.set(win.id, d.id);
+        win.setContentBounds(
+          { x: d.bounds.x, y: d.bounds.y, width: d.bounds.width, height: d.bounds.height },
+          false,
+        );
+        const full = deskGeometry();
+        // anchor = 宠物包围盒左上角的**绝对屏幕点**：窗口搬到新屏后，渲染端据此重新落位，
+        // 保证宠物在屏幕上的位置不变（不能靠渲染端自己记录，窗口 resize 会先把位置重置）。
+        win.webContents.send('pet:displays', {
+          ...full,
+          hull: { x: d.bounds.x, y: d.bounds.y, width: d.bounds.width, height: d.bounds.height },
+          anchor: { x: bx, y: by },
+        });
+      }
+    } catch {}
     const petId = [...windows.keys()].find((id) => windows.get(id) === win);
     if (petId) {
       updatePetState(petId, {
@@ -876,17 +913,16 @@ app.whenReady().then(() => {
   let displaysTimer = null;
   const pushDisplays = () => {
     const full = deskGeometry();
-    const wr = petWindowRect();
-    const geo = { ...full, hull: { x: wr.x, y: wr.top, width: wr.width, height: wr.height } };
     lastRequestedBounds.clear(); // 坐标系变了，去重缓存作废，下一帧必须真的重设一次
     for (const win of windows.values()) {
       if (win.isDestroyed()) continue;
-      // 桌面几何变化：把"静态大窗口"重挂到新的外接矩形上（这是唯一允许窗口移动的时机）
+      // 窗口 = 它当前承载的那块显示器；分辨率/排列变化时按显示器 id 重挂
+      const d = screen.getDisplayMatching(win.getBounds());
+      const wr = displayRectFor({ x: d.bounds.x + d.bounds.width / 2, y: d.bounds.y + d.bounds.height / 2 });
+      winDisplayId.set(win.id, d.id);
+      const geo = { ...full, hull: { x: wr.x, y: wr.y, width: wr.width, height: wr.height } };
       try {
-        win.setContentBounds(
-          { x: wr.x, y: wr.top, width: wr.width, height: wr.height },
-          false,
-        );
+        win.setContentBounds({ x: wr.x, y: wr.y, width: wr.width, height: wr.height }, false);
       } catch {}
       win.webContents.send('pet:displays', geo);
     }

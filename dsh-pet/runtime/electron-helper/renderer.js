@@ -123,8 +123,19 @@ function injectAssets() {
 // 这条通道是必需的——桌面几何原先只在窗口创建时经 URL query 注入一次，运行期永不更新。
 if (window.petBridge && window.petBridge.onDisplays) {
   window.petBridge.onDisplays((geo) => {
+    // 主进程可能把**整个窗口搬到另一块显示器**（窗口 = 当前所在屏，Codex 同款模型）。
+    // 搬家时它会带 anchor = 宠物包围盒的绝对屏幕点；应用新 VIEW 后按 anchor 重新落位，
+    // 保证宠物在屏幕上的位置不变（不能靠这里自己记录：窗口 resize 事件会先把位置重置）。
     if (!applyDeskGeometry(geo)) return;
-    for (const s of sprites) s.relayout();
+    const anchor = geo && geo.anchor;
+    for (const s of sprites) {
+      if (!s) continue;
+      if (anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y) && typeof s.placeAtScreen === 'function') {
+        s.placeAtScreen(anchor);
+      } else {
+        s.relayout();
+      }
+    }
   });
 }
 
@@ -133,10 +144,10 @@ if (window.petBridge && window.petBridge.onDisplays) {
 // 会把宠物拉回 customPos（上一次的落点）。跨屏时 Windows 会因 WM_DPICHANGED 主动改窗口尺寸，
 // 那正好落在拖拽/飞行过程中，不设防就会看到宠物瞬间跳回上一个落点。
 window.addEventListener('resize', () => {
-  for (const s of sprites) {
-    if (s.dragState.active || s.throwRef !== null || s.moveRef !== null) continue;
-    s.position();
-  }
+  // 窗口尺寸变化 = 主进程正在把窗口搬到另一块显示器（窗口 = 当前屏，Codex 同款模型）。
+  // **这里什么都不做**：随后到达的 pet:displays（带 anchor）会按绝对屏幕点重新落位。
+  // 历史教训：曾经在这里 position() 或延迟 relayout()，前者会把宠物重置回 customPos，
+  // 后者 500ms 后再重置一次 —— 表现为"搬过去又跳回原位 / 来回搬屏"。
 });
 
 // 气泡总开关（见 sprite.js renderBubble）：false = 完全不渲染气泡，把头顶空间让给会话面板。

@@ -1163,3 +1163,38 @@ pos=900 → left= 90  屏幕左缘=900  ✅ 居中
 
 **诊断**：主进程每 0.5s 把 `{ignore, cursor, body, bounds, hull, setBoundsCount}` 写到
 `~/.dsh/dsh-pet-click-diag-<pid>.json`（用户点不到时无法用右键菜单复制诊断，只能主动落盘）。
+
+### 坑 26（最终架构）：窗口 = 宠物当前所在的那块显示器（Codex 同款）
+
+**动机**：单窗口跨屏在 macOS「显示器有独立 Space」下会被裁到一块屏（实测红色覆盖只有副屏下半段；
+窗口 bounds 说是 (0,0) 4072×982，实际只合成一部分）。而 Codex/ChatGPT 桌面版**不是**跨屏大窗口 ——
+把它的宠物拖到副屏前后对比窗口 bounds：
+
+```
+主屏时: ChatGPT layer=3 bounds=(0,0) 1512x982
+副屏时: ChatGPT layer=3 bounds=(1512,-458) 2560x1440
+```
+
+⇒ **单个窗口、大小 = 当前所在显示器，跨屏时整窗搬家。**
+
+**实现**：
+
+| 位置 | 改动 |
+|---|---|
+| main | `displayRectFor(point)`；创建窗口用主屏；`winDisplayId` 记录当前屏；`pet:set-bounds` 里按"宠物中心在哪块屏"决定是否 `setContentBounds` 搬家，并下发 `pet:displays`（hull=新屏 + **anchor=宠物包围盒绝对屏幕点**） |
+| renderer | `pet:displays`：应用新 VIEW 后按 anchor 重新落位（窗口 resize 事件里**什么都不做**） |
+| sprite | `screenPoint()` / `placeAtScreen(anchor)`；`sendBounds` **不夹窗口边界**（要允许越界才能触发换屏） |
+
+**踩过的两个坑**（都在调试中修掉）：
+1. 窗口 resize 时 `position()` 会把宠物重置回 `customPos`，用旧位置触发**反向搬屏**（1→2 后立刻 2→1）。→ 搬迁后 700ms 静默期 + resize 事件不做位置重置。
+2. 保位不能靠渲染端自己记录（resize 先把位置改了）→ 由主进程下发绝对 anchor。
+
+**验证**（CDP 驱动探针）：
+```
+请求宠物到屏幕点 (2600,800)
+→ [display switch 1 -> 2]，窗口搬到副屏 2560×1440，视口 1280×720
+→ 落位 pos=(544,629) ⇒ 屏幕点仍是 (2600,800) ✅
+```
+
+**收益**：窗口永远等于一块屏 → 不跨屏 → 不受 macOS 约束；宠物在窗口内移动 → 拖拽/漫游无窗口抖动；
+跨屏只在中心进入另一块屏时发生一次整窗搬家。
