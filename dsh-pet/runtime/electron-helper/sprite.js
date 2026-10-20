@@ -65,7 +65,7 @@ class PetSprite {
     this.once = true;
     this.facing = 'left';
     // 交互/移动
-    this.dragState = { active: false, dragging: false, sx: 0, sy: 0, petX: 0, petY: 0 };
+    this.dragState = { active: false, dragging: false, sx: 0, sy: 0, petX: 0, petY: 0, pressX: 0, pressY: 0, absX: 0, absY: 0 };
     this.justDragged = false;
     this._interactive = null; // 已上报的可交互状态（setInteractive 去重用）
     this._panelBusy = false; // 光标是否停在面板等登记区（经 setInputBusy 顶住兜底穿透翻转）
@@ -331,6 +331,16 @@ class PetSprite {
       x: Math.round(pt.x / CONFIG.scale - VIEW.x),
       y: Math.round(pt.y / CONFIG.scale - VIEW.y),
     };
+    // 跨屏搬家：拖动中的目标点也要按新 VIEW 重算，否则弹簧会继续朝**旧坐标系**的目标追，
+    // 表现为"跨屏后飞出去很远"。
+    const d = this.dragState;
+    if (d.active && d.targetAbs) {
+      this.dragTarget = {
+        x: d.targetAbs.x / CONFIG.scale - VIEW.x,
+        y: d.targetAbs.y / CONFIG.scale - VIEW.y,
+      };
+      if (this.startDragFollow) this.startDragFollow();
+    }
     this.sendBounds(this.pos.x, this.pos.y);
   }
 
@@ -940,6 +950,11 @@ class PetSprite {
       dragging: false,
       sx: toLocal(e.screenX),
       sy: toLocal(e.screenY),
+      // 绝对屏幕基准（points）：跨屏搬家后 VIEW 会变，视口坐标不能当基准，否则目标点整体平移
+      pressX: e.screenX,
+      pressY: e.screenY,
+      absX: this.screenPoint().x,
+      absY: this.screenPoint().y,
       petX: this.pos.x,
       petY: this.pos.y,
     };
@@ -975,9 +990,16 @@ class PetSprite {
     this._lastPtrCss = { x: toLocal(e.screenX), y: toLocal(e.screenY) };
     this.dragTrail.push({ t: now, x: toLocal(e.screenX), y: toLocal(e.screenY) });
     this.dragTrail = S.trimTrail(this.dragTrail, now);
-    // 弹簧目标 = 按下时的宠物位置 + 指针屏幕增量（窗口怎么动都不影响坐标）——不再硬贴指针，
-    // 由 rAF 弹簧跟随逐帧追赶（抹平高频抖动，与浏览器同构）
-    this.dragTarget = { x: d.petX + dx, y: d.petY + dy };
+    // 弹簧目标 = 按下时的**宠物绝对屏幕点** + 指针屏幕增量 —— 不再依赖视口坐标。
+    // 跨屏时窗口搬到另一块显示器，VIEW 会变；若用 d.petX（旧的视口坐标）当基准，
+    // 目标点会整体平移 VIEW 的差值，表现为"跨屏后飞出去很远"。
+    const targetAbsX = d.absX + (e.screenX - d.pressX);
+    const targetAbsY = d.absY + (e.screenY - d.pressY);
+    d.targetAbs = { x: targetAbsX, y: targetAbsY };
+    this.dragTarget = {
+      x: targetAbsX / CONFIG.scale - VIEW.x,
+      y: targetAbsY / CONFIG.scale - VIEW.y,
+    };
     this.startDragFollow();
   }
 
@@ -1001,10 +1023,10 @@ class PetSprite {
     // 偏差恒为 0：系统光标与 pointer 的 screenX/Y 同为 DIP，单位一致。
     // （曾经用"上一次指针位置"当参考来算偏差 —— 那是错的：它把**移动量**也算进了偏差，
     //   于是 pets 被固定在旧位置、拖拽时明显"跟手偏移/滑开"，跨屏时偏移更大。）
-    const px = cx;
-    const py = cy;
-    const dx = px - d.sx;
-    const dy = py - d.sy;
+    const px = p.x;
+    const py = p.y;
+    const dx = px - d.pressX;
+    const dy = py - d.pressY;
     if (!d.dragging) {
       if (Math.hypot(dx, dy) < S.DRAG_THRESHOLD) return;
       d.dragging = true;
@@ -1012,7 +1034,12 @@ class PetSprite {
       if (this.animations.drag.length) this.playOnce(S.pick(this.animations.drag));
       this.syncInputBusy();
     }
-    this.dragTarget = { x: d.petX + dx, y: d.petY + dy };
+    // 绝对屏幕点：p 是主进程喂来的系统光标（points），与 d.pressX/absX 同单位
+    d.targetAbs = { x: d.absX + dx, y: d.absY + dy };
+    this.dragTarget = {
+      x: d.targetAbs.x / CONFIG.scale - VIEW.x,
+      y: d.targetAbs.y / CONFIG.scale - VIEW.y,
+    };
     this.startDragFollow();
   }
 
