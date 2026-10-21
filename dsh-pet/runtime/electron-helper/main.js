@@ -273,6 +273,8 @@ const lastRequestedBounds = new Map();
 let setBoundsCount = 0;
 /** win.id -> 宠物身体矩形（屏幕点 {x,y,w,h}）：点击穿透兜底用（大窗口下窗口矩形没意义） */
 const petBodyRects = new Map();
+/** win.id -> 宠物包围盒左上角（屏幕点）：显示器几何变化时用它当 anchor，避免宠物跳回角落 */
+const petBoxAbs = new Map();
 
 /**
  * 宠物间碰撞 broker 状态：petId -> { x, y, vx, vy, size, bottomPad }。
@@ -548,6 +550,7 @@ function createPetWindows() {
       } catch {}
     }, 500) : null;
     win.on('closed', () => {
+      petBoxAbs.delete(win.id);
       if (diagTimer) clearInterval(diagTimer);
       clearInterval(pointerTimer);
       windows.delete(pet.id);
@@ -737,6 +740,7 @@ app.whenReady().then(() => {
     setBoundsCount++;
     if (![bx, by, size].every(Number.isFinite) || size <= 0) return;
     const ch = (size * 9) / 16;
+    petBoxAbs.set(win.id, { x: bx, y: by });
     petBodyRects.set(win.id, {
       x: bx + (200 / 640) * size,
       y: by + (Number.isFinite(bottomPad) ? bottomPad : 0) + (50 / 360) * ch,
@@ -931,7 +935,14 @@ app.whenReady().then(() => {
       const d = screen.getDisplayMatching(win.getBounds());
       const wr = displayRectFor({ x: d.bounds.x + d.bounds.width / 2, y: d.bounds.y + d.bounds.height / 2 });
       winDisplayId.set(win.id, d.id);
-      const geo = { ...full, hull: { x: wr.x, y: wr.y, width: wr.width, height: wr.height } };
+      const anchor = petBoxAbs.get(win.id) || null;
+      const geo = {
+        ...full,
+        hull: { x: wr.x, y: wr.y, width: wr.width, height: wr.height },
+        // 显示器分辨率/排列变化不是"跨屏搬家"，宠物应尽量留在**原来的绝对屏幕位置**；
+        // 不带 anchor 的话渲染端会走 relayout() → position() 把宠物重置回保存的角落。
+        ...(anchor ? { anchor } : {}),
+      };
       try {
         win.setContentBounds({ x: wr.x, y: wr.y, width: wr.width, height: wr.height }, false);
       } catch {}

@@ -1312,3 +1312,23 @@ at pushDisplays (...main.js:930)`。显示器休眠/唤醒、改分辨率、插�
   —— 桌宠是常驻后台进程，不该因为一次几何竞态打断用户。
 
 **教训**：`electron main` 里定时器/事件回调抛出的异常会弹模态框；后台进程应有全局兜底。
+
+### 坑 29 补充：不只是"不报错"，功能路径也实测了
+
+**修复本体**：`pushDisplays` 里那行日志改用 `full`（作用域内存在）。触发一次显示器事件后，
+日志 `displays changed: …` **正常打印** —— 这证明异常源已消除（修复前正是这行抛错），
+而不是被全局兜底吞掉。
+
+**顺带修掉的功能问题**：`pushDisplays` 推送几何时**没有带 anchor**，渲染端只好走
+`relayout()` → `position()` 把宠物**重置回保存的角落**。现在：
+
+- `pet:set-bounds` 时记录 `petBoxAbs`（宠物包围盒绝对屏幕点）；
+- 显示器几何变化时把它作为 `anchor` 一起下发 → 渲染端按绝对点落位，宠物**留在原屏幕位置**。
+
+**端到端验证**（探针 + 主进程 inspector 手动 `screen.emit('display-metrics-changed')`）：
+
+```
+触发后窗口 bounds 不变、重挂到所在显示器；
+渲染端 pos (-56,529) / 屏幕点 (1400,600) 与触发前完全一致  ← anchor 生效
+日志出现 displays changed，无 uncaughtException            ← 异常源已修复
+```
