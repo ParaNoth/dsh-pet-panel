@@ -1332,3 +1332,30 @@ at pushDisplays (...main.js:930)`。显示器休眠/唤醒、改分辨率、插�
 渲染端 pos (-56,529) / 屏幕点 (1400,600) 与触发前完全一致  ← anchor 生效
 日志出现 displays changed，无 uncaughtException            ← 异常源已修复
 ```
+
+### 坑 30：任务栏里 Electron 图标一直闪（DPI 探测的自激循环）
+
+**症状**：Dock/任务栏里一个 "Electron" 图标反复出现又消失。
+
+**根因（实测复现）**：Windows 专用的"全局 DPI 线性化"在 macOS 上也被启用了，
+它在 `pushDisplays` 里会拉起一个**短命的完整 Electron 子进程**探测主屏缩放：
+
+```
+显示器事件 → pushDisplays → 拉起 dpi-probe 子进程（一个 Electron 应用 → Dock 图标闪）
+          → 新应用出现/消失在 Dock → workArea 高度抖动（895/894/893）
+          → macOS 再发 display-metrics-changed → 回到第一步
+```
+
+实测 20 秒内 `displays changed` 触发 **12 次**、持续拉起探测进程；macOS 上这套线性化本来就不需要
+（它解决的是 Windows 混合缩放多屏的 DIP 换算问题）。
+
+**修法**：
+
+1. **DPI 线性化只在 win32 启用**；macOS 直接用 `screen.getPrimaryDisplay().scaleFactor` 读真实缩放，
+   不再需要子进程。
+2. `petScale()` 增加 macOS 分支：`base × 真实主屏缩放` —— 保持宠物观感与之前完全一致。
+3. `pushDisplays` 里的缩放探测：**限频 60s 且仅 win32**（防止事件风暴里反复 spawn）。
+4. **隐藏 Dock 图标**：`app.setActivationPolicy('accessory')` + `app.dock.hide()`（启动与 ready 各一次）。
+   `lsappinfo` 验证：helper 的 `ApplicationType = "UIElement"`（无 Dock 图标）。
+
+**验证**：同环境 20 秒观察期 —— `displays changed` **0 次**、`dpi-probe` 子进程 **0 个**（修复前 12 次 / 持续）。

@@ -47,6 +47,19 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 // 我们的 DPI 缓存与 Chromium profile 都会和别人混在一起。必须赶在任何 getPath('userData') 之前设。
 app.setName('dsh-pet-electron-helper');
 
+// macOS：桌宠是后台代理，不该在 Dock 里出现（也避免短命探测进程让 Dock 图标闪烁）。
+// inaccessible 的 accessory 策略 = 无 Dock 图标、无菜单栏，但仍可有窗口。
+if (process.platform === 'darwin' && app.setActivationPolicy) {
+  try {
+    app.setActivationPolicy('accessory');
+  } catch {}
+}
+if (process.platform === 'darwin' && app.dock) {
+  try {
+    app.dock.hide();
+  } catch {}
+}
+
 // 后台 helper 的兜底：未捕获异常/未处理的 Promise 拒绝只写 stderr，**不要弹模态框**。
 // 桌宠是常驻后台进程，一次几何边界情况（如显示器事件竞态）不应该打断用户；
 // 日志仍会进宿主 stderr，便于排查。
@@ -222,7 +235,12 @@ function probePrimaryScale() {
 let PRIMARY_SCALE = 0;
 /** 实际生效的强制缩放（0 = 未启用，坐标系维持修复前的逐屏 DIP） */
 let FORCED_SCALE = 0;
-if (!DPI_PROBE && process.env.DSH_PET_FORCE_DSF !== '0') {
+// ⚠️ 这套"全局 DPI 线性化"是为 **Windows 混合缩放多屏** 写的（见上面的长注释）：
+// 它靠拉起一个短命 Electron 子进程探测真实主屏缩放。在 macOS 上不需要，
+// 而且会形成自激循环：探测进程出现/消失在 Dock → workArea 抖动 → display-metrics-changed
+// → 再触发探测（实测每 ~1.6s 一次，任务栏 Electron 图标一直闪）。
+// 因此只在 win32 启用；macOS 直接用 screen API 读真实 scaleFactor（无需子进程）。
+if (!DPI_PROBE && process.platform === 'win32' && process.env.DSH_PET_FORCE_DSF !== '0') {
   PRIMARY_SCALE = readCachedPrimaryScale() || probePrimaryScale();
   const override = Number(process.env.DSH_PET_FORCE_DSF);
   const forced = Number.isFinite(override) && override > 0 ? override : PRIMARY_SCALE > 0 ? 1 : 0;
@@ -238,7 +256,10 @@ if (!DPI_PROBE && process.env.DSH_PET_FORCE_DSF !== '0') {
  */
 function petScale() {
   const base = Number(process.env.DSH_PET_SCALE || '1') || 1;
-  return FORCED_SCALE > 0 && PRIMARY_SCALE > 0 ? base * (PRIMARY_SCALE / FORCED_SCALE) : base;
+  if (FORCED_SCALE > 0 && PRIMARY_SCALE > 0) return base * (PRIMARY_SCALE / FORCED_SCALE);
+  // macOS：不强行线性化，但保持与之前相同的观感（宠物按主屏缩放渲染）
+  if (process.platform === 'darwin' && PRIMARY_SCALE > 0) return base * PRIMARY_SCALE;
+  return base;
 }
 
 /** bridge 模式：DSH_PET_BRIDGE=1（宿主注入）。开启时注册 dsh-pet-bridge scheme + 管道转发 */
@@ -684,6 +705,19 @@ async function handleBridgeRequest(request) {
 }
 
 app.whenReady().then(() => {
+  // macOS：ready 后再隐藏一次 Dock 图标（进程启动早期调用可能被忽略）。
+  if (process.platform === 'darwin' && app.dock) {
+    try {
+      app.dock.hide();
+    } catch {}
+  }
+  // macOS：直接用 screen API 读真实主屏缩放（不做线性化、不拉探测子进程）。
+  // 它只用于 petScale() 保持宠物在不同 DPI 屏上的观感一致。
+  if (process.platform === 'darwin' && PRIMARY_SCALE === 0) {
+    try {
+      PRIMARY_SCALE = screen.getPrimaryDisplay().scaleFactor || 0;
+    } catch {}
+  }
   // 渲染端脚本（index.html 里的 *.js）走 file://，曾出现"文件已更新但页面仍用旧脚本"，
   // 排查时表现为快照缺字段、行为像上一版。启动时清一次缓存，保证加载磁盘上的当前版本。
   try {
@@ -926,6 +960,8 @@ app.whenReady().then(() => {
   // createPetWindows() 算一次并经 URL query 注入，渲染端 VIEW 是模块顶层常量，运行期永不更新——
   // 表现为「改了分辨率后可移动范围还是旧的」。这里重算并推给所有窗口，渲染端就地重挂。
   let displaysTimer = null;
+/** 上次主屏缩放探测时间：避免显示器事件风暴里反复拉起 Electron 子进程 */
+let lastScaleProbeAt = 0;
   const pushDisplays = () => {
     const full = deskGeometry();
     lastRequestedBounds.clear(); // 坐标系变了，去重缓存作废，下一帧必须真的重设一次
@@ -953,7 +989,8 @@ app.whenReady().then(() => {
     console.error('[dsh-pet-desktop-helper] displays changed: ' + JSON.stringify(full));
     // 主屏缩放可能一起变了（它决定宠物的尺寸补偿）。线性化生效期间 screen API 只报被强制的值，
     // 真实值只能靠探测子进程拿；不一致就刷新缓存，下次启动自动用上。
-    if (FORCED_SCALE > 0) {
+    if (FORCED_SCALE > 0 && process.platform === 'win32' && Date.now() - lastScaleProbeAt > 60000) {
+      lastScaleProbeAt = Date.now();
       setTimeout(() => {
         const real = probePrimaryScale();
         if (real > 0 && Math.abs(real - PRIMARY_SCALE) > 1e-6) {
