@@ -1295,3 +1295,20 @@ pos=900 → left= 90  屏幕左缘=900  ✅ 居中
 终点      屏幕点 = (2600,800) ✅   换屏仅一次
 抛掷：绝对点 (2616,72) ↔ 视口 (552,265) 往返一致 ✅
 ```
+
+### 坑 29：显示器事件触发 Uncaught Exception（`geo is not defined`）
+
+**症状**：隔一段时间弹 macOS 的 `Uncaught Exception: ReferenceError: geo is not defined
+at pushDisplays (...main.js:930)`。显示器休眠/唤醒、改分辨率、插拔屏都会触发。
+
+**根因**：坑 26 重写 `pushDisplays` 时，`geo` 变成了 `for` 循环内的**块级变量**，
+但循环后的日志行仍在用 `JSON.stringify(geo)` → 每次 pushDisplays 都抛 ReferenceError。
+（几何其实已经逐窗发送成功，抛错只影响那行日志与后面的主屏缩放探测。）
+
+**修法**：
+- 日志改用 `full`（桌面整体几何）；
+- `scheduleDisplays` 里对 `pushDisplays()` 包 try/catch（双保险 + 精确定位）；
+- main 进程加 `uncaughtException` / `unhandledRejection` 兜底：**只写 stderr 不弹模态框**
+  —— 桌宠是常驻后台进程，不该因为一次几何竞态打断用户。
+
+**教训**：`electron main` 里定时器/事件回调抛出的异常会弹模态框；后台进程应有全局兜底。

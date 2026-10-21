@@ -46,6 +46,16 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 // "Electron"，userData 便落到 %APPDATA%\Electron —— 那是所有这么跑的 Electron 脚本的公共目录，
 // 我们的 DPI 缓存与 Chromium profile 都会和别人混在一起。必须赶在任何 getPath('userData') 之前设。
 app.setName('dsh-pet-electron-helper');
+
+// 后台 helper 的兜底：未捕获异常/未处理的 Promise 拒绝只写 stderr，**不要弹模态框**。
+// 桌宠是常驻后台进程，一次几何边界情况（如显示器事件竞态）不应该打断用户；
+// 日志仍会进宿主 stderr，便于排查。
+process.on('uncaughtException', (err) => {
+  console.error('[dsh-pet] uncaughtException: ' + (err && err.stack ? err.stack : String(err)));
+});
+process.on('unhandledRejection', (err) => {
+  console.error('[dsh-pet] unhandledRejection: ' + (err && err.stack ? err.stack : String(err)));
+});
 // 排障开关（默认关闭）：若存在 ~/.dsh/dsh-pet-debug-port 且内容是端口号，则给 helper 开远程调试。
 // 用途：宠物窗口是独立 Electron 进程，主窗口的调试器看不到它；排查"窗口在但内容不渲染/命中判定"
 // 这类问题时，需要直接检查它自己的 renderer。删除该文件即恢复默认。
@@ -927,7 +937,9 @@ app.whenReady().then(() => {
       } catch {}
       win.webContents.send('pet:displays', geo);
     }
-    console.error('[dsh-pet-desktop-helper] displays changed: ' + JSON.stringify(geo));
+    // 注意：geo 是循环内的块级变量，这里只能用 full（桌面整体几何）。
+    // 曾经误用 geo → pushDisplays 每次触发都抛 ReferenceError（显示器事件/唤醒屏时弹 Uncaught Exception）。
+    console.error('[dsh-pet-desktop-helper] displays changed: ' + JSON.stringify(full));
     // 主屏缩放可能一起变了（它决定宠物的尺寸补偿）。线性化生效期间 screen API 只报被强制的值，
     // 真实值只能靠探测子进程拿；不一致就刷新缓存，下次启动自动用上。
     if (FORCED_SCALE > 0) {
@@ -950,7 +962,11 @@ app.whenReady().then(() => {
     if (displaysTimer) clearTimeout(displaysTimer);
     displaysTimer = setTimeout(() => {
       displaysTimer = null;
-      pushDisplays();
+      try {
+        pushDisplays();
+      } catch (err) {
+        console.error('[dsh-pet] pushDisplays failed: ' + (err && err.stack ? err.stack : String(err)));
+      }
     }, 300);
   };
   screen.on('display-metrics-changed', scheduleDisplays);
